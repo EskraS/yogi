@@ -1,0 +1,15 @@
+PyQt6>=6.11
+PyQt6-WebEngine>=6.11
+QtAwesome>=1.4
+requests>=2.33
+numpy>=2.5
+sounddevice>=0.5
+mss>=10.1
+Pillow>=12.1
+keyboard>=0.13
+websocket-client>=1.9
+faster-whisper>=1.2
+av>=18.1
+keyring>=25.7
+chess>=1.11
+onnxruntime>=1.20

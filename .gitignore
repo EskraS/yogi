@@ -1,0 +1,23 @@
+# Python env / cache
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local / OS
+.DS_Store
+Thumbs.db
+*.log
+debug-*.log
+orb-frame-*.png
+
+# Editor / AI tooling
+.cursor/
+.opencode/
+graphify-out/
+
+# JS prototype leftovers
+yogi-js/node_modules/
+yogi-js/.next/

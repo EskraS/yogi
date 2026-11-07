@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wireframe Orb</title>
+
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+          }
+        }
+    </script>
+
+    <style>
+        html,
+        body {
+            margin: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+            border: 0;
+        }
+
+        canvas {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+            background: transparent;
+            border: 0;
+            outline: 0;
+        }
+    </style>
+</head>
+
+<body>
+
+    <script type="module">
+        /* =====================================================================
+                                            Imports
+         * ===================================================================== */
+        import * as THREE from "three";
+        import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+        import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+        import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+        import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+        import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+
+        const TWO_PI = Math.PI * 2;
+
+
+        /* =====================================================================
+                                            Config
+         * ===================================================================== */
+
+        // Core shape.
+        const look = {
+            radius: 1.0,
+            height: 1.9,
+            bulge: 0.06,
+            lobeStrength: 0.13,
+            lobeCount: 3,        
+            pullStrength: 0.09,
+            pullSpread: 0.18,
+            twist: 0.3,
+            wobble: 0.2,
+            density: 0.4,
+            rim: 0.6,
+            opacity: 0.5,
+            flow: 1.5,
+            glow: 0.04,
+            glowSpread: 0.1,     // bloom radius; higher spreads the halo further from the lines
+            spin: 0.06,
+        };
+
+        // Screen-space color ramp: deep at one side, lite at the other.
+        const gradientLook = {
+            deep: "#032227",
+            mid: "#2D636B",
+            lite: "#4E7B98",
+            split: 0.73,         // 0..1, where the deep-to-mid blend hands off to mid-to-lite
+        };
+
+        // Boot values. Ring scales, then blooms
+        const boot = {
+            delay: 0.12 / 1.8,
+            growDuration: 0.9 / 1.8,
+            hold: 0.15,
+            distortDuration: 0.45,
+            volume: 0.8,
+            soundLead: 0.2,      // seconds BEFORE the boot sound starts playing
+        };
+
+        // Microphone analysis
+        const audioLook = {
+            fftSize: 1024,               
+            smoothing: 0.7,              
+            bands: {                     
+                low: [80, 300],          
+                mid: [300, 1500],        
+                high: [1500, 5000],      
+            },
+            attack: 10,                  // how fast a band level rises
+            release: 5,                  // how fast a band level falls
+            loudnessMix: { low: 0.5, mid: 0.35, high: 0.15 },
+        };
+
+        // How much each voice band strengthens its swells, dents, etc.
+        const voiceLook = {
+            swellGain: 0.5,
+            dentGain: 0.5,
+            pullGain: 0.6,
+            flowBoost: 0.4,
+            intensity: 1.0,      // scales every voice-driven deformation; Python overrides it via setVoiceIntensity
+        };
+
+        // Randomness that keeps it from looking synthetic.
+        const organicLook = {
+            chaos: 0.6,          // how out of sync each swell, dent and pull reacts
+            wander: 0.35,        // how fast that randomness evolves
+            softLimit: 1.5,      // squashes big wind moves; higher = calmer peaks
+        };
+
+        // Directional shape deformation driven by loudness. - acts like a curtain in a wind
+        const windLook = {
+            sensitivity: 2.5,    // how loud you need to be for full wind
+            strength: 0.22,      // deformation at full wind
+            baseSpeed: 0.6,      // ripple travel speed in silence
+            speedBoost: 2.0,     // extra travel speed at full wind
+            rise: 6,             // how quickly a gust builds
+            settle: 1.5,         // how slowly it dies down
+            drift: 0.15,         // how much the wind direction wanders
+            inward: 1.5,         // depth of inward ripples relative to outward ones
+            heightLag: 1.0,      // how much ripples shift between rings; higher hides dents
+        };
+
+        // Mesh rotation speed while speaking.
+        const spinLook = {
+            quiet: 1.1,          // spin multiplier for quiet speech
+            loud: 1.3,           // spin multiplier for loud speech
+            threshold: 0.04,     // threshold of noise. anything below is 0
+            ease: 3,             // how quickly the spin speed changes
+            featureFollow: 0.12, // share of the extra voice spin the dents follow (0 = none, 1 = locked to body)
+        };
+
+        // Mesh res and quality of render.
+        const meshLook = {
+            ringCount: 200,
+            segmentsPerRing: 360,
+        };
+
+        const renderLook = {
+            superSample: 2,
+            maxPixelRatio: 3,
+            glowFloor: 0.03,     // brightness below this is fully transparent; raise to tighten the glow
+            edgeFadeStart: 0.8,  // glow fades out from this fraction of the window radius to the edge
+            brightness: 1.0,     // overall orb brightness on screen; 1 = full, lower = dimmer and more see-through
+        };
+
+        // Independent noise streams; changing a seed reshuffles that motion.
+        const SEED = {
+            swell: 100,
+            dent: 200,
+            pull: 300,
+            gust: 21,
+            windPhase: 31,
+            windDir: 41,
+            windPhaseB: 51,
+        };
+
+
+        /* =====================================================================
+                                            Actors
+         * ===================================================================== */
+
+        // home height, travel range, height width, angular offset, signed strength, travel speed, start offset
+        const swells = [
+            { home: 0.18, travel: 0.20, width: 0.135, offset: 0.0, strength: 1.30, speed: 0.21, start: 0.0 },
+            { home: 0.48, travel: 0.24, width: 0.11, offset: 2.1, strength: 0.95, speed: 0.16, start: 1.7 },
+            { home: 0.80, travel: 0.18, width: 0.145, offset: 4.2, strength: 1.15, speed: 0.26, start: 3.9 },
+        ];
+        const dents = [
+            { home: 0.30, travel: 0.22, width: 0.12, offset: 1.2, strength: -1.10, speed: 0.13, start: 0.8 },
+            { home: 0.62, travel: 0.25, width: 0.11, offset: 3.4, strength: -0.90, speed: 0.19, start: 2.6 },
+            { home: 0.88, travel: 0.20, width: 0.145, offset: 5.0, strength: -1.25, speed: 0.24, start: 4.8 },
+        ];
+        // start angle, home height, signed strength (+ swells out, - presses in), angular tightness, angular drift speed
+        const pulls = [
+            { angle: 2.4, home: 0.35, strength: 0.90, tightness: 7.0, drift: 0.26 },
+            { angle: 5.3, home: 0.62, strength: -0.75, tightness: 8.0, drift: -0.19 },
+            { angle: 0.8, home: 0.80, strength: 0.60, tightness: 5.0, drift: 0.34 },
+            { angle: 1.6, home: 0.45, strength: -1.40, tightness: 11.0, drift: -0.31 },
+            { angle: 4.1, home: 0.70, strength: -1.20, tightness: 13.0, drift: 0.22 },
+        ];
+
+        const toPocket = (p) => new THREE.Vector4(p.home, p.width, p.offset, p.strength);
+        const toPull = (p) => new THREE.Vector4(p.angle, p.home, p.strength, p.tightness);
+
+
+        /* =====================================================================
+                                            Helpers
+         * ===================================================================== */
+
+        function easeOutCubic(p) {
+            return 1 - Math.pow(1 - p, 3);
+        }
+
+        // Frame-rate independent exponential approach toward target.
+        function approach(current, target, rate, dt) {
+            return current + (target - current) * (1 - Math.exp(-dt * rate));
+        }
+
+        // Fast rise, slower fall; used for voice band levels.
+        function follow(current, target, dt) {
+            const rate = target > current ? audioLook.attack : audioLook.release;
+            return approach(current, target, rate, dt);
+        }
+
+        // Smooth value noise in 0 - 1; each seed is an independent stream.
+        function noise(x, seed) {
+            const hash = (n) => {
+                const s = Math.sin((n + seed * 57.13) * 127.1) * 43758.5453;
+                return s - Math.floor(s);
+            };
+            const i = Math.floor(x);
+            const f = x - i;
+            const u = f * f * (3 - 2 * f);
+            return hash(i) + (hash(i + 1) - hash(i)) * u;
+        }
+
+        // Two octaves of noise in 0..1.
+        function organic(x, seed) {
+            return 0.65 * noise(x, seed) + 0.35 * noise(x * 2.17 + 5.3, seed + 11);
+        }
+
+        // Per-actor reaction multiplier
+        function jitter(seed, time) {
+            return 1 + organicLook.chaos * (2 * organic(time * organicLook.wander, seed) - 1);
+        }
+
+
+        /* =====================================================================
+                                        Geometry
+         * ===================================================================== */
+
+        const { ringCount, segmentsPerRing } = meshLook;
+        const vertexCount = ringCount * segmentsPerRing;
+
+        const ringCoords = new Float32Array(vertexCount * 2);   // x: height 0..1, y: angle
+        const lineIndices = new Uint32Array(vertexCount * 2);   // two vertex indices per segment
+
+        for (let ring = 0; ring < ringCount; ring++) {
+            const t = ring / (ringCount - 1);
+            const ringStart = ring * segmentsPerRing;
+
+            for (let seg = 0; seg < segmentsPerRing; seg++) {
+                const vertex = ringStart + seg;
+                ringCoords[vertex * 2] = t;
+                ringCoords[vertex * 2 + 1] = (seg / segmentsPerRing) * TWO_PI;
+
+                lineIndices[vertex * 2] = vertex;
+                lineIndices[vertex * 2 + 1] = ringStart + (seg + 1) % segmentsPerRing;
+            }
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("ringCoord", new THREE.BufferAttribute(ringCoords, 2));
+        geometry.setIndex(new THREE.BufferAttribute(lineIndices, 1));
+        geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 2.0);
+
+
+        /* =====================================================================
+                                        Shaders (GLSL)
+         * ===================================================================== */
+
+        const vertexShader = /* glsl */`
+            attribute vec2 ringCoord;   // x: height 0..1, y: angle
+
+            // ---- shape ----
+            uniform float uRadius, uHeight;
+            uniform float uBulge, uLobeStrength, uTwist, uWobble;
+            uniform vec4 uLobes;                        // swell lobes, dent lobes, baseline harmonic, ripple harmonic
+            uniform float uPullStrength, uPullSpread;
+
+            // ---- actors ----
+            uniform vec4 uSwells[${swells.length}];     // height center, height width, full phase, signed strength
+            uniform vec4 uDents[${dents.length}];
+            uniform vec4 uPulls[${pulls.length}];       // angle, height center, signed strength, angular tightness
+            uniform float uSwellPhase, uBaselinePhase, uRipplePhase;
+            uniform float uFeatureOffset;               // angular lag of actors behind the mesh spin
+
+            // ---- wind ----
+            uniform float uWind, uWindPhase, uWindPhaseB, uWindDir;   // strength, phases, angle the wind comes from
+            uniform float uWindInward, uWindHeightLag, uWindSoftLimit;
+
+            // ---- shading ----
+            uniform float uRingStep, uGapReference;
+            uniform float uDensity, uRim, uOpacity;
+            uniform vec2 uGradientDirection;
+            uniform vec3 uColorDeep, uColorMid, uColorLite;
+            uniform float uColorSplit;
+
+            // ---- boot ----
+            uniform float uBootSize, uBootShape, uBootFade;
+
+            varying vec3 vColor;
+            varying float vIntensity;
+            varying float vAlpha;
+
+            const float PI = 3.141592653589793;
+
+            /* ---------- surface field: swells and dents ---------- */
+
+            float bump(float x) {
+                return pow(0.5 + 0.5 * cos(x), 1.25);
+            }
+
+            float pocket(vec4 p, float lobes, float ang, float t) {
+                float d = (t - p.x) / p.y;
+                return p.w * exp(-d * d) * bump(lobes * ang + p.z);
+            }
+
+            float field(float ang, float t) {
+                float w = 0.18 * sin(uLobes.z * ang + uBaselinePhase);
+                for (int i = 0; i < ${swells.length}; i++) {
+                    w += pocket(uSwells[i], uLobes.x, ang, t);
+                }
+                for (int i = 0; i < ${dents.length}; i++) {
+                    w += pocket(uDents[i], uLobes.y, ang, t);
+                }
+                return w / (1.0 + 0.18 * w * w);
+            }
+
+            /* ---------- pulls: tight pokes that also drag rings vertically ---------- */
+
+            void applyPulls(float featAng, float t, inout float radius, inout float y) {
+                for (int i = 0; i < ${pulls.length}; i++) {
+                    vec4 p = uPulls[i];
+                    float dh = t - p.y;
+                    float g = uRadius * uPullStrength * p.z
+                            * exp(p.w * (cos(featAng - p.x) - 1.0) - dh * dh / (uPullSpread * uPullSpread));
+                    radius += g;
+                    y -= 1.4 * dh * g;
+                }
+            }
+
+            // integer angular multipliers keep each ring closed
+            void applyWind(float ang, float t, float envelope, inout float radius, inout float y) {
+                float windAng = ang - uWindDir;
+                float lee = 0.5 - 0.5 * cos(windAng);
+
+                // from the top view only the outest ring per angle shows, so dents need
+                // a small height lag to line up across rings and stay visible
+                float gust = sin(2.0 * windAng - uWindPhase + uWindHeightLag * t)
+                           + 0.55 * sin(3.0 * windAng - uWindPhaseB + 1.75 * uWindHeightLag * t + 1.3)
+                           + 0.3 * sin(5.0 * windAng + 0.6 * uWindPhaseB - uWindPhase + 2.6 * uWindHeightLag * t + 4.1);
+                float patchiness = 0.6 + 0.4 * sin(windAng + 0.37 * uWindPhaseB + 2.0 * t);
+                gust *= patchiness;
+                gust *= gust < 0.0 ? uWindInward : 1.0;
+
+                float windTerm = uWind * envelope
+                               * (0.6 * gust * (0.25 + 0.75 * lee) - 0.25 * cos(windAng));
+                radius += uRadius * windTerm / (1.0 + uWindSoftLimit * abs(windTerm));
+                y += uRadius * uWind * 0.3 * envelope * cos(2.0 * windAng - uWindPhase + uWindHeightLag * t);
+            }
+
+
+            vec3 displace(float t, float theta, out float w) {
+                float ang = theta + uTwist * (t - 0.5);
+                float heightSin = max(sin(PI * t), 0.0);
+                float envelope = 0.35 + 0.65 * heightSin * heightSin;
+                // swells, dents and pulls spin at their own rate instead of riding the mesh rotation
+                float featAng = ang - uFeatureOffset;
+
+                w = field(featAng, t);
+
+                float radius = uRadius * (1.0 + uBulge * (pow(heightSin, 1.5) - 0.30));
+                radius += uRadius * uLobeStrength * envelope
+                        * (2.3 * w + 0.07 * sin(uLobes.w * featAng + uRipplePhase));
+
+                float y = (t - 0.5) * uHeight;
+                applyPulls(featAng, t, radius, y);
+                applyWind(ang, t, envelope, radius, y);
+
+                radius = max(radius, 0.05);
+                y += uRadius * uWobble * 0.18 * sin(uLobes.x * featAng + uSwellPhase + 2.3) * envelope;
+
+                vec3 deformed = vec3(radius * cos(theta), y, radius * sin(theta));
+                vec3 plain = vec3(uRadius * cos(theta), (t - 0.5) * uHeight, uRadius * sin(theta));
+                return mix(plain, deformed, uBootShape);
+            }
+
+            /* ------------- shading helpers ------------- */
+
+            vec3 gradientColor(vec4 view) {
+                vec2 screenDir = length(view.xy) > 0.03 ? normalize(view.xy) : vec2(0.0, 1.0);
+                float g = 0.5 - 0.5 * clamp(dot(screenDir, uGradientDirection) * 1.65, -1.0, 1.0);
+                return g < uColorSplit
+                    ? mix(uColorDeep, uColorMid, g / uColorSplit)
+                    : mix(uColorMid, uColorLite, (g - uColorSplit) / (1.0 - uColorSplit));
+            }
+
+            void main() {
+                float t = ringCoord.x;
+                float theta = ringCoord.y;
+
+                float w, nextW;
+                vec3 displaced = displace(t, theta, w);
+                vec3 nextRing = displace(t + uRingStep, theta, nextW);
+
+                // shading uses the unscaled shape so density, rim and depth stay consistent while growing
+                vec4 view = modelViewMatrix * vec4(displaced, 1.0);
+                vec4 nextView = modelViewMatrix * vec4(nextRing, 1.0);
+
+                // uniform scale from center: plain rings grow, then the shape blooms
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced * uBootSize, 1.0);
+
+                // ring spacing on screen: tightly packed rings glow brighter
+                float gap = length(nextView.xy - view.xy) * (3.5 / max(-view.z, 0.8));
+                float density = clamp(uGapReference / max(gap, 1e-5), 0.0, 2.0) * 0.5;
+
+                vColor = gradientColor(view);
+
+                float rim = smoothstep(0.55, 1.0, abs(t - 0.5) * 2.0);
+                float depth = clamp((-view.z - 3.6) / 2.6, 0.0, 1.0);
+
+                vIntensity = (1.0 + uDensity * 2.2 * density * density)
+                           * (1.0 + uRim * 1.2 * rim)
+                           * (1.0 + 0.22 * w * uBootShape)
+                           * mix(1.06, 0.50, depth);
+
+                float ang = theta + uTwist * (t - 0.5);
+                float sheen = 0.86 + 0.14 * sin(ang * 2.0 + uSwellPhase * 1.7 + t * 5.0);
+                vAlpha = uOpacity * mix(0.35, 1.0, density) * sheen * uBootFade;
+            }
+        `;
+
+        const fragmentShader = /* glsl */`
+            varying vec3 vColor;
+            varying float vIntensity;
+            varying float vAlpha;
+
+            void main() {
+                gl_FragColor = vec4(vColor * vIntensity, vAlpha);
+            }
+        `;
+
+
+        /* =====================================================================
+                                Uniforms and material
+         * ===================================================================== */
+
+        const phases = { swell: 0.7, baseline: 2.1, ripple: 4.4, dent: 5.1 };
+
+        const uniforms = {
+            // shape
+            uRadius: { value: look.radius },
+            uHeight: { value: look.height },
+            uBulge: { value: look.bulge },
+            uLobeStrength: { value: look.lobeStrength },
+            uTwist: { value: look.twist },
+            uWobble: { value: look.wobble },
+            uLobes: {
+                value: new THREE.Vector4(
+                    look.lobeCount,
+                    Math.max(2, look.lobeCount - 1),
+                    look.lobeCount * 2 + 3,
+                    look.lobeCount * 5 + 2,
+                ),
+            },
+            uPullStrength: { value: look.pullStrength },
+            uPullSpread: { value: look.pullSpread },
+
+            // dents and stuff
+            uSwells: { value: swells.map(toPocket) },
+            uDents: { value: dents.map(toPocket) },
+            uPulls: { value: pulls.map(toPull) },
+            uSwellPhase: { value: phases.swell },
+            uBaselinePhase: { value: phases.baseline },
+            uRipplePhase: { value: phases.ripple },
+            uFeatureOffset: { value: 0 },
+
+            // 'wind'
+            uWind: { value: 0 },
+            uWindPhase: { value: 0 },
+            uWindPhaseB: { value: 0 },
+            uWindDir: { value: 0 },
+            uWindInward: { value: windLook.inward },
+            uWindHeightLag: { value: windLook.heightLag },
+            uWindSoftLimit: { value: organicLook.softLimit },
+
+            // shading
+            uRingStep: { value: 1 / (ringCount - 1) },
+            uGapReference: { value: look.height / (ringCount - 1) },
+            uDensity: { value: look.density },
+            uRim: { value: look.rim },
+            uOpacity: { value: look.opacity },
+            uGradientDirection: { value: new THREE.Vector2(0.82, 0.57).normalize() },
+            uColorDeep: { value: new THREE.Color(gradientLook.deep) },
+            uColorMid: { value: new THREE.Color(gradientLook.mid) },
+            uColorLite: { value: new THREE.Color(gradientLook.lite) },
+            uColorSplit: { value: gradientLook.split },
+
+            // boot
+            uBootSize: { value: 0 },
+            uBootShape: { value: 0 },
+            uBootFade: { value: 0 },
+        };
+
+        const material = new THREE.ShaderMaterial({
+            uniforms,
+            vertexShader,
+            fragmentShader,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false,
+        });
+
+        const tubeLines = new THREE.LineSegments(geometry, material);
+
+
+        /* =====================================================================
+                        Renderer, locked top-down camera, bloom
+         * ===================================================================== */
+
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: true,
+            powerPreference: "high-performance",
+        });
+        renderer.setClearColor(0x000000, 0);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        document.body.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+        scene.add(tubeLines);
+
+        const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 100);
+        camera.position.set(0, 5, 0);
+        camera.up.set(0, 0, -1);
+        camera.lookAt(0, 0, 0);
+
+        const composer = new EffectComposer(renderer);
+        composer.addPass(new RenderPass(scene, camera, null, new THREE.Color(0x000000), 0));
+
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), look.glow, look.glowSpread, 0.0);
+        // Overlapping additive lines reach ~50x white. Blurred, that floods the whole
+        // window, so the bloom only sees light clamped to white.
+        bloomPass.materialHighPassFilter.fragmentShader = /* glsl */`
+            uniform sampler2D tDiffuse;
+            varying vec2 vUv;
+            void main() {
+                vec4 texel = texture2D(tDiffuse, vUv);
+                gl_FragColor = vec4(min(texel.rgb, vec3(1.0)), texel.a);
+            }
+        `;
+        bloomPass.materialHighPassFilter.needsUpdate = true;
+        composer.addPass(bloomPass);
+        composer.addPass(new OutputPass());
+
+        // The orb is additive light on black, so brightness is coverage. Output
+        // premultiplied color with alpha = brightness: lit pixels show, empty ones
+        // vanish. The floor trims the faint bloom haze that spreads to the edges.
+        const lightToAlphaPass = new ShaderPass({
+            uniforms: {
+                tDiffuse: { value: null },
+                uFloor: { value: renderLook.glowFloor },
+                uEdgeFadeStart: { value: renderLook.edgeFadeStart },
+                uBrightness: { value: renderLook.brightness },
+            },
+            vertexShader: /* glsl */`
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: /* glsl */`
+                uniform sampler2D tDiffuse;
+                uniform float uFloor;
+                uniform float uBrightness;
+                uniform float uEdgeFadeStart;
+                varying vec2 vUv;
+                void main() {
+                    vec3 c = clamp(texture2D(tDiffuse, vUv).rgb, 0.0, 1.0);
+                    c = max(c - uFloor, 0.0) / (1.0 - uFloor);
+                    // The window hugs the orb, so halo reaching the edges would outline it.
+                    float r = length(vUv - 0.5) * 2.0;
+                    c *= 1.0 - smoothstep(uEdgeFadeStart, 1.0, r);
+                    c *= uBrightness;
+                    float a = max(c.r, max(c.g, c.b));
+                    gl_FragColor = vec4(c, a);
+                }
+            `,
+        });
+        composer.addPass(lightToAlphaPass);
+
+        function resize() {
+            const pixelRatio = Math.min(devicePixelRatio * renderLook.superSample, renderLook.maxPixelRatio);
+
+            camera.aspect = innerWidth / innerHeight;
+            camera.updateProjectionMatrix();
+
+            renderer.setPixelRatio(pixelRatio);
+            renderer.setSize(innerWidth, innerHeight);
+            composer.setPixelRatio(pixelRatio);
+            composer.setSize(innerWidth, innerHeight);
+        }
+
+        resize();
+        addEventListener("resize", resize);
+
+
+        /* =====================================================================
+                                        Audio input
+         * ===================================================================== */
+
+        let analyser = null;
+        let freqData = null;
+
+        // Levels pushed in by Python (mic while listening, TTS while the reply plays).
+        // Used only when this page is not capturing the microphone itself.
+        const externalVoice = { low: 0, mid: 0, high: 0, active: false };
+
+        window.setVoiceLevels = (low, mid, high) => {
+            externalVoice.low = low;
+            externalVoice.mid = mid;
+            externalVoice.high = high;
+            externalVoice.active = true;
+        };
+
+        window.setVoiceIntensity = (value) => {
+            voiceLook.intensity = Math.max(0, value);
+        };
+
+        window.resetVoice = () => {
+            externalVoice.low = 0;
+            externalVoice.mid = 0;
+            externalVoice.high = 0;
+            externalVoice.active = false;
+            voice.low = 0;
+            voice.mid = 0;
+            voice.high = 0;
+            wind.strength = 0;
+            uniforms.uWind.value = 0;
+        };
+
+        // Must run from a user gesture; browsers keep AudioContext suspended any other way.
+        async function getMicrophone() {
+            if (analyser) return;
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            const audioContext = new AudioContext();
+            await audioContext.resume();
+            console.log("audio state:", audioContext.state);
+
+            const source = audioContext.createMediaStreamSource(stream);
+            const node = audioContext.createAnalyser();
+            node.fftSize = audioLook.fftSize;
+            node.smoothingTimeConstant = audioLook.smoothing;
+            source.connect(node);
+
+            freqData = new Uint8Array(node.frequencyBinCount);
+            analyser = node;
+        }
+
+        // Average energy between two frequencies, 0 - 1.
+        function bandLevel([loHz, hiHz]) {
+            const hzPerBin = analyser.context.sampleRate / analyser.fftSize;
+            const a = Math.floor(loHz / hzPerBin);
+            const b = Math.ceil(hiHz / hzPerBin);
+
+            let sum = 0;
+            for (let i = a; i < b; i++) {
+                sum += freqData[i];
+            }
+            return sum / ((b - a) * 255);
+        }
+
+
+        /* =====================================================================
+                                    Boot sequence
+         * ===================================================================== */
+
+        const clock = new THREE.Clock();
+
+        const bootState = { start: 0, soundPlayed: false };
+
+        const loadSound = new Audio("sounds/loadMain.mp3");
+        loadSound.volume = boot.volume;
+
+        function bootCurves(elapsed) {
+            const t = elapsed - boot.delay;
+            if (t <= 0) return { size: 0, shape: 0, fade: 0 };
+
+            const growP = Math.min(t / boot.growDuration, 1);
+            const size = easeOutCubic(Math.pow(growP, 1.7));
+
+            const distortT = t - boot.growDuration - boot.hold;
+            const distortP = distortT <= 0 ? 0 : Math.min(distortT / boot.distortDuration, 1);
+            const shape = easeOutCubic(distortP);
+
+            const fade = Math.min(1, size * 4.0);
+            return { size, shape, fade };
+        }
+
+        function playLoadSound() {
+            loadSound.currentTime = 0;
+            loadSound.play().catch(() => { });
+        }
+
+        // Public hook: replays the boot animation and sound.
+        window.bootOrb = () => {
+            bootState.start = clock.elapsedTime;
+            bootState.soundPlayed = false;
+            loadSound.pause();
+            loadSound.currentTime = 0;
+            uniforms.uBootSize.value = 0;
+            uniforms.uBootShape.value = 0;
+            uniforms.uBootFade.value = 0;
+        };
+
+
+        /* =====================================================================
+                                    Frame updates
+         * ===================================================================== */
+
+        const voice = { low: 0, mid: 0, high: 0 };
+        const wind = { strength: 0, phase: 0, phaseB: 0, dir: 0.6 };
+        const spin = { multiplier: 1, featureAngle: 0 };
+
+        function updateVoice(dt) {
+            let low, mid, high;
+            if (analyser) {
+                analyser.getByteFrequencyData(freqData);
+                low = bandLevel(audioLook.bands.low);
+                mid = bandLevel(audioLook.bands.mid);
+                high = bandLevel(audioLook.bands.high);
+            } else if (externalVoice.active) {
+                low = externalVoice.low;
+                mid = externalVoice.mid;
+                high = externalVoice.high;
+            } else {
+                return;
+            }
+
+            voice.low = follow(voice.low, low, dt);
+            voice.mid = follow(voice.mid, mid, dt);
+            voice.high = follow(voice.high, high, dt);
+        }
+
+        // Combined loudness, 0 - 1.
+        function loudness() {
+            const mix = audioLook.loudnessMix;
+            return Math.min(1, windLook.sensitivity
+                * (mix.low * voice.low + mix.mid * voice.mid + mix.high * voice.high));
+        }
+
+        function updateBoot(time) {
+            const elapsed = time - bootState.start;
+
+            const curves = bootCurves(elapsed);
+            uniforms.uBootSize.value = curves.size;
+            uniforms.uBootShape.value = curves.shape;
+            uniforms.uBootFade.value = curves.fade;
+
+            // distortion begins at growDuration + hold; soundLead pulls playback earlier
+            const sinceDelay = elapsed - boot.delay;
+            const soundAt = boot.growDuration + boot.hold - boot.soundLead;
+            if (!bootState.soundPlayed && sinceDelay >= soundAt) {
+                bootState.soundPlayed = true;
+                playLoadSound();
+            }
+        }
+
+        // Body spins at the full voice multiplier; the rest follows only part of the extra speed.
+        function updateSpin(dt, loud) {
+            const target = loud > spinLook.threshold
+                ? spinLook.quiet + (spinLook.loud - spinLook.quiet) * loud
+                : 1;
+            spin.multiplier = approach(spin.multiplier, target, spinLook.ease, dt);
+
+            tubeLines.rotation.y += dt * look.spin * spin.multiplier;
+            spin.featureAngle += dt * look.spin * (1 + spinLook.featureFollow * (spin.multiplier - 1));
+            uniforms.uFeatureOffset.value = (tubeLines.rotation.y - spin.featureAngle) % TWO_PI;
+        }
+
+        function updateWind(dt, time, loud) {
+            const gustiness = 0.55 + 0.45 * organic(time * 0.9, SEED.gust);
+            const target = loud * gustiness;
+            const rate = target > wind.strength ? windLook.rise : windLook.settle;
+            wind.strength = approach(wind.strength, target, rate, dt);
+
+            const speed = windLook.baseSpeed + windLook.speedBoost * wind.strength;
+            wind.phase += dt * speed * (0.6 + 0.8 * organic(time * 0.3, SEED.windPhase));
+            wind.phaseB += dt * speed * (0.5 + 0.9 * organic(time * 0.27, SEED.windPhaseB));
+            wind.dir += dt * windLook.drift * 4 * (2 * organic(time * 0.2, SEED.windDir) - 1);
+
+            uniforms.uWind.value = windLook.strength * voiceLook.intensity * wind.strength;
+            uniforms.uWindPhase.value = wind.phase;
+            uniforms.uWindPhaseB.value = wind.phaseB;
+            uniforms.uWindInward.value = windLook.inward;
+            uniforms.uWindHeightLag.value = windLook.heightLag;
+            uniforms.uWindSoftLimit.value = organicLook.softLimit;
+            // compensate for the mesh spin so the wind keeps blowing from a fixed screen direction
+            uniforms.uWindDir.value = wind.dir + tubeLines.rotation.y;
+        }
+
+        // Moves a group of pockets up and down their travel range.
+        function travel(actors, targets, groupPhase, time) {
+            actors.forEach((p, i) => {
+                targets[i].x = p.home + p.travel * Math.sin(time * p.speed * look.flow + p.start);
+                targets[i].z = groupPhase + p.offset;
+            });
+        }
+
+        function updateShapes(dt, time) {
+            const flowStep = dt * look.flow * (1 + voiceLook.flowBoost * voice.low);
+
+            phases.swell += flowStep * 0.50;
+            phases.baseline -= flowStep * 0.85;
+            phases.ripple += flowStep * 1.40;
+            phases.dent -= flowStep * 0.33;
+
+            uniforms.uSwellPhase.value = phases.swell;
+            uniforms.uBaselinePhase.value = phases.baseline;
+            uniforms.uRipplePhase.value = phases.ripple;
+
+            swells.forEach((p, i) => {
+                uniforms.uSwells.value[i].w = p.strength
+                    * (1 + voiceLook.intensity * voiceLook.swellGain * voice.low * jitter(SEED.swell + i, time));
+            });
+            dents.forEach((p, i) => {
+                uniforms.uDents.value[i].w = p.strength
+                    * (1 + voiceLook.intensity * voiceLook.dentGain * voice.mid * jitter(SEED.dent + i, time));
+            });
+
+            travel(swells, uniforms.uSwells.value, phases.swell, time);
+            travel(dents, uniforms.uDents.value, phases.dent, time);
+
+            pulls.forEach((p, i) => {
+                const target = uniforms.uPulls.value[i];
+                target.x += flowStep * p.drift;
+                target.y = THREE.MathUtils.clamp(
+                    p.home + 0.07 * Math.sin(time * (0.45 + 0.21 * i) + i * 2.1), 0.08, 0.92);
+                target.z = p.strength * (1 + voiceLook.intensity * voiceLook.pullGain * voice.high * jitter(SEED.pull + i, time));
+            });
+        }
+
+
+        /* =====================================================================
+                                        Main loop
+         * ===================================================================== */
+
+        renderer.setAnimationLoop(() => {
+            const dt = Math.min(clock.getDelta(), 0.05);
+            const time = clock.elapsedTime;
+
+            updateVoice(dt);
+            const loud = loudness();
+
+            updateBoot(time);
+            updateSpin(dt, loud);       // must run before updateWind, which reads the new rotation
+            updateWind(dt, time, loud);
+            updateShapes(dt, time);
+
+            composer.render();
+        });
+    </script>
+</body>
+
+</html>

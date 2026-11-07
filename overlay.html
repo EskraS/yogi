@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Silk Field</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  body { touch-action: none; cursor: crosshair; opacity: 0;
+         transition: opacity var(--fade, 320ms) cubic-bezier(.4, 0, .2, 1); }
+  body.shown { opacity: 1; }
+  /* Everything that dims the frozen screen; the selection is cut out of it. */
+  #veil { position: fixed; inset: 0; background: rgba(0, 0, 0, .22); }
+  #veil canvas { display: block; opacity: .6; }
+  #grain {
+    position: fixed; inset: 0; z-index: 5; pointer-events: none;
+    opacity: .045; background-size: 128px 128px; background-repeat: repeat;
+  }
+  #sel {
+    position: fixed; display: none; box-sizing: border-box;
+    border: 1px solid #fff; pointer-events: none;
+  }
+  /* Outside #veil: the veil's selection hole must not clip the links. */
+  #accent { position: fixed; inset: 0; z-index: 6; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="veil"><div id="grain"></div></div>
+<div id="sel"></div>
+<canvas id="accent"></canvas>
+
+<script>
+/* Called from region_overlay.py while the user drags (CSS px). w = 0 clears. */
+window.setSelection = function (x, y, w, h) {
+  const veil = document.getElementById('veil'), sel = document.getElementById('sel');
+  window.__sel = (w > 0 && h > 0) ? { x, y, w, h } : null;
+  if (w <= 0 || h <= 0) {
+    veil.style.clipPath = '';
+    sel.style.display = 'none';
+    return;
+  }
+  const x2 = x + w, y2 = y + h;
+  veil.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ` +
+    `${x}px ${y}px, ${x2}px ${y}px, ${x2}px ${y2}px, ${x}px ${y2}px, ${x}px ${y}px)`;
+  Object.assign(sel.style, {
+    display: 'block', left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px'
+  });
+};
+/* Called from region_overlay.py on open / close; Qt hides the window after ms. */
+window.setShown = function (on, ms) {
+  document.body.style.setProperty('--fade', ms + 'ms');
+  /* Two frames: on open the page was hidden, and a transition needs a painted start frame. */
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.toggle('shown', on)));
+};
+window.clearAccent = function () {
+  window.__sel = null;
+  if (window.__accentLinks) window.__accentLinks.clear();
+};
+</script>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "delaunator": "https://cdn.jsdelivr.net/npm/delaunator@5.0.1/+esm"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import Delaunator from 'delaunator';
+
+/* ------------------------------------------------------------------ */
+/*  renderer / scene / camera                                          */
+/* ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({
+  antialias: true, alpha: true, powerPreference: 'high-performance', stencil: false
+});
+renderer.setClearColor(0x000000, 0);
+document.getElementById('veil').prepend(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 300);
+const basePos    = new THREE.Vector3(0, 2.7, 17.6);
+const baseTarget = new THREE.Vector3(0, 0.9, 0);
+
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const SPEED   = reduced ? 0.10 : 0.65;
+
+/* ------------------------------------------------------------------ */
+/*  shared uniforms + the one displacement field                       */
+/* ------------------------------------------------------------------ */
+const shared = {
+  uTime:    { value: 0 },
+  uClock:   { value: 0 },                     // real seconds — star lifecycles
+  uPointer: { value: new THREE.Vector3(0, 0, 0) }
+};
+
+const GLSL_FIELD = /* glsl */`
+uniform float uTime;
+uniform vec3  uPointer;
+
+vec3 silkField(vec2 p, float t) {
+  float z = 0.0, dx = 0.0, dy = 0.0;
+  float s, c, ph;
+
+  s = sin(p.x*0.230 + t*0.210);  c = cos(p.x*0.230 + t*0.210);
+  float sB = cos(p.y*0.190 - t*0.170);
+  float cB = sin(p.y*0.190 - t*0.170);
+  z  += 0.58 * s * sB;
+  dx += 0.1334 * c * sB;
+  dy -= 0.1102 * s * cB;
+
+  ph = p.x*0.110 + p.y*0.160 + t*0.150;
+  s = sin(ph); c = cos(ph);
+  z  += 0.36 * s;
+  dx += 0.0396 * c;
+  dy += 0.0576 * c;
+
+  ph = p.x*0.620 + p.y*0.440 + t*0.330;
+  s = sin(ph); c = cos(ph);
+  z  += 0.19 * s;
+  dx += 0.1178 * c;
+  dy += 0.0836 * c;
+
+  ph = p.y*1.150 - t*0.470 + p.x*0.350;
+  s = sin(ph); c = cos(ph);
+  z  += 0.10 * s;
+  dx += 0.0350 * c;
+  dy += 0.1150 * c;
+
+  float fx = p.x*2.100 + t*0.720;
+  float fy = p.y*1.900 - t*0.540;
+  float sx = sin(fx), cx = cos(fx), sy = sin(fy), cy = cos(fy);
+  z  += 0.045 * sx * sy;
+  dx += 0.0945 * cx * sy;
+  dy += 0.0855 * sx * cy;
+
+  if (uPointer.z > 0.002) {
+    vec2 d = p - uPointer.xy;
+    float g = exp(-dot(d,d) / 24.0);
+    float A = uPointer.z * 0.17 * (0.85 + 0.15*sin(t*0.65)) * g;
+    z  += A;
+    dx -= A * (2.0*d.x/24.0);
+    dy -= A * (2.0*d.y/24.0);
+  }
+  return vec3(z, dx, dy);
+}
+`;
+
+/* ------------------------------------------------------------------ */
+/*  the sheet                                                          */
+/* ------------------------------------------------------------------ */
+const field = new THREE.Group();
+field.rotation.x = -0.42;
+scene.add(field);
+field.updateMatrixWorld(true);
+
+const sheetPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+  new THREE.Vector3(0, 0, 1).applyQuaternion(field.quaternion), field.position);
+
+/* --- the membrane ------------------------------------------------- */
+const membraneMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, depthTest: false, side: THREE.DoubleSide,
+  uniforms: { uTime: shared.uTime, uPointer: shared.uPointer },
+  vertexShader: GLSL_FIELD + /* glsl */`
+    varying vec3 vN; varying vec3 vV; varying vec2 vLocal; varying float vZ;
+    void main(){
+      vec3 f = silkField(position.xy, uTime);
+      vec3 pos = vec3(position.xy, f.x);
+      vZ = f.x; vLocal = position.xy;
+      vec3 nL = normalize(vec3(-f.y, -f.z, 1.0));
+      vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+      vV = mv.xyz;
+      vN = normalize(normalMatrix * nL);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    varying vec3 vN; varying vec3 vV; varying vec2 vLocal; varying float vZ;
+    uniform float uTime;
+    float hash21(vec2 p){ p = fract(p*vec2(234.34, 435.345)); p += dot(p, p+34.23); return fract(p.x*p.y*2.34); }
+    float vnoise(vec2 p){
+      vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+      return mix( mix(hash21(i),           hash21(i+vec2(1,0)), f.x),
+                  mix(hash21(i+vec2(0,1)), hash21(i+vec2(1,1)), f.x), f.y);
+    }
+    void main(){
+      vec3 n = normalize(vN);
+      vec3 v = normalize(-vV);
+      float la = uTime*0.045;
+      vec3 L = normalize(vec3(0.42*sin(la), 0.46, 0.78));
+
+      float wrap = clamp(dot(n, L)*0.6 + 0.4, 0.0, 1.0);
+      float diff = wrap*wrap;
+      float grazing = pow(1.0 - abs(dot(n, v)), 2.6);
+      vec3 h = normalize(L + v);
+      float spec = pow(clamp(dot(n, h), 0.0, 1.0), 30.0);
+
+      float mot  = vnoise(vLocal*0.16 + 3.7)  - 0.5;
+      float mot2 = vnoise(vLocal*0.9  + 11.3) - 0.5;
+
+      vec3 col = vec3(0.112, 0.121, 0.144);
+      col += diff    * 0.052;
+      col += spec    * vec3(0.105, 0.110, 0.125);
+      col += grazing * 0.05;
+      col += mot*0.016 + mot2*0.007;
+      col += clamp(vZ, -1.4, 1.4) * 0.011;
+
+      vec2 q = vLocal / vec2(19.0, 11.5);
+      float presence = 0.30 + 0.70*exp(-1.35*dot(q,q));
+      float air = mix(0.78, 1.0, 1.0 - smoothstep(13.0, 30.0, length(vV)));
+      gl_FragColor = vec4(col, 0.52 * presence * air);
+    }`
+});
+const membrane = new THREE.Mesh(new THREE.PlaneGeometry(52, 30, 190, 112), membraneMat);
+membrane.renderOrder = 1; membrane.frustumCulled = false;
+field.add(membrane);
+
+/* --- the fabric dots: 400, 1 px, exact grid ------------------------
+   Dots that belong to a constellation ignite + lift while it is alive.
+   The star gate (step on aBoost) makes sure plain fabric dots never
+   breathe — at rest every dot sits exactly inline on the grid.        */
+const pointsMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, depthTest: false,
+  uniforms: { uTime: shared.uTime, uPointer: shared.uPointer,
+              uClock: shared.uClock, uPixelRatio: { value: 1 } },
+  vertexShader: GLSL_FIELD + /* glsl */`
+    attribute float aAlpha; attribute float aTint;
+    attribute float aBoost; attribute float aZOff;
+    attribute float aStart; attribute float aDur; attribute float aPeriod;
+    uniform float uClock;
+    uniform float uPixelRatio;
+    varying float vA; varying vec3 vC;
+    void main(){
+      vec3 f = silkField(position.xy, uTime);
+      float z = f.x;
+      float lift = 0.0;
+      if (uPointer.z > 0.002){
+        vec2 d = position.xy - uPointer.xy;
+        float g = exp(-dot(d,d)/6.0);
+        z += 0.5*uPointer.z*g;
+        lift = g*uPointer.z;
+      }
+      float p = (mod(uClock, aPeriod) - aStart) / aDur;
+      float env = smoothstep(0.0, 0.30, p) * (1.0 - smoothstep(0.52, 1.0, p));
+      env *= step(0.001, aBoost);          /* only true constellation stars breathe */
+      z += aZOff * env;                    /* star floats while its group is alive */
+      vec3 base = mix(vec3(0.58, 0.61, 0.66), vec3(0.63, 0.605, 0.575), aTint);
+      vC = mix(base, vec3(0.72, 0.76, 0.84), env*0.55);
+      vA = aAlpha*(1.0 + 0.35*lift) + aBoost*env;
+      gl_PointSize = max(1.0, floor(uPixelRatio + 0.5));
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy, z, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vA; varying vec3 vC;
+    void main(){ gl_FragColor = vec4(vC, vA); }`
+});
+const points = new THREE.Points(new THREE.BufferGeometry(), pointsMat);
+points.renderOrder = 3; points.frustumCulled = false;
+field.add(points);
+
+/* --- constellation lines --------------------------------------------
+   Each endpoint carries ITS DOT's own schedule and zOff — the exact
+   same values the dot renders with — so line ends sit on the dots
+   pixel-for-pixel at every moment.                                  */
+const linesMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, depthTest: false,
+  uniforms: { uTime: shared.uTime, uPointer: shared.uPointer, uClock: shared.uClock },
+  vertexShader: GLSL_FIELD + /* glsl */`
+    attribute float aFade;
+    attribute float aZOff;
+    attribute float aStart; attribute float aDur; attribute float aPeriod;
+    uniform float uClock;
+    varying float vFade; varying float vEnv;
+    void main(){
+      vec3 f = silkField(position.xy, uTime);
+      float z = f.x;
+      if (uPointer.z > 0.002){
+        vec2 d = position.xy - uPointer.xy;
+        z += 0.5*uPointer.z*exp(-dot(d,d)/6.0);
+      }
+      float p = (mod(uClock, aPeriod) - aStart) / aDur;
+      float env = smoothstep(0.0, 0.30, p) * (1.0 - smoothstep(0.52, 1.0, p));
+      z += aZOff * env;
+      vEnv = env;
+      vFade = aFade;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy, z, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vFade; varying float vEnv;
+    void main(){ gl_FragColor = vec4(0.63, 0.67, 0.74, vFade * vEnv); }`
+});
+const lines = new THREE.LineSegments(new THREE.BufferGeometry(), linesMat);
+lines.renderOrder = 2; lines.frustumCulled = false;
+field.add(lines);
+
+/* degenerate safety geometries: if buildField ever fails, the renderer
+   still has valid (invisible) attributes to draw — never a blank crash */
+(function safety(){
+  let g = points.geometry;
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0,0,0]), 3));
+  g.setAttribute('aAlpha',  new THREE.BufferAttribute(new Float32Array([0]), 1));
+  g.setAttribute('aTint',   new THREE.BufferAttribute(new Float32Array([0]), 1));
+  g.setAttribute('aBoost',  new THREE.BufferAttribute(new Float32Array([0]), 1));
+  g.setAttribute('aZOff',   new THREE.BufferAttribute(new Float32Array([0]), 1));
+  g.setAttribute('aStart',  new THREE.BufferAttribute(new Float32Array([0]), 1));
+  g.setAttribute('aDur',    new THREE.BufferAttribute(new Float32Array([10]), 1));
+  g.setAttribute('aPeriod', new THREE.BufferAttribute(new Float32Array([60]), 1));
+
+  g = lines.geometry;
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0,0,0, 0,0,0]), 3));
+  g.setAttribute('aZOff',   new THREE.BufferAttribute(new Float32Array([0,0]), 1));
+  g.setAttribute('aFade',   new THREE.BufferAttribute(new Float32Array([0,0]), 1));
+  g.setAttribute('aStart',  new THREE.BufferAttribute(new Float32Array([0,0]), 1));
+  g.setAttribute('aDur',    new THREE.BufferAttribute(new Float32Array([10,10]), 1));
+  g.setAttribute('aPeriod', new THREE.BufferAttribute(new Float32Array([60,60]), 1));
+})();
+
+/* ------------------------------------------------------------------ */
+/*  generation: dot grid + constellations ON the grid                  */
+/* ------------------------------------------------------------------ */
+let gridDots = [], gridPitch = 1;
+
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; }; }
+
+function viewRect(){
+  const rcam = new THREE.PerspectiveCamera(camera.fov, innerWidth/Math.max(1,innerHeight), 0.1, 300);
+  rcam.position.copy(basePos); rcam.lookAt(baseTarget); rcam.updateMatrixWorld(true);
+  let x0=1e9, x1=-1e9, y0=1e9, y1=-1e9;
+  const hit=new THREE.Vector3(), p=new THREE.Vector3(), ray=new THREE.Ray();
+  for (const cx of [-1,1]) for (const cy of [-1,1]){
+    p.set(cx, cy, 0.5).unproject(rcam);
+    ray.set(rcam.position, p.sub(rcam.position).normalize());
+    if (ray.intersectPlane(sheetPlane, hit)){
+      field.worldToLocal(hit);
+      x0=Math.min(x0,hit.x); x1=Math.max(x1,hit.x);
+      y0=Math.min(y0,hit.y); y1=Math.max(y1,hit.y);
+    }
+  }
+  return { x0, x1, y0, y1 };
+}
+
+function buildField(){
+  const view = viewRect();
+  const VW = view.x1-view.x0, VH = view.y1-view.y0;
+  const x0 = view.x0 - VW*0.10, x1 = view.x1 + VW*0.10;
+  const y0 = view.y0 - VH*0.10, y1 = view.y1 + VH*0.10;
+  const W = x1-x0, H = y1-y0;
+  const cx = (x0+x1)/2, cy = (y0+y1)/2;
+  const rng = mulberry32(1830177);
+
+  /* ---- 400 fabric dots, exact grid ---- */
+  const portrait = H > W;
+  const cols = portrait ? 16 : 25, rows = portrait ? 25 : 16;
+  const gdx = W/(cols-1), gdy = H/(rows-1);
+  const pitch = Math.sqrt(gdx*gdy);
+  const dots=[];
+  const dPos=[], dA=[], dT=[];
+  for (let r=0; r<rows; r++) for (let c=0; c<cols; c++){
+    const x = x0 + gdx*c, y = y0 + gdy*r;
+    dots.push({x, y});
+    dPos.push(x, y, 0);
+    dA.push(0.55 + rng()*0.35);
+    dT.push(rng());
+  }
+  const N = dots.length;
+  const snap = (x,y)=>{
+    const c = Math.max(0, Math.min(cols-1, Math.round((x-x0)/gdx)));
+    const r = Math.max(0, Math.min(rows-1, Math.round((y-y0)/gdy)));
+    return r*cols+c;
+  };
+  const dist = (i,j)=> Math.hypot(dots[i].x-dots[j].x, dots[i].y-dots[j].y);
+  const at = (i,ox,oy)=> snap(dots[i].x + ox*pitch, dots[i].y + oy*pitch);
+  const pickAt = (i,ang,Lmin,Lmax)=>{
+    const a2 = ang + (rng()-0.5)*0.5;
+    const L = (Lmin + (Lmax-Lmin)*rng()) * pitch;
+    return snap(dots[i].x + Math.cos(a2)*L, dots[i].y + Math.sin(a2)*L);
+  };
+
+  /* ---- shared bookkeeping ---- */
+  const keys = new Set();       // global edge dedup
+  const claim = new Map();      // dot index -> {z, boost, st, dur, per}
+  function makeCtx(){
+    const vs=[], es=[];
+    const V = (i,z)=>{ vs.push({i,z}); return vs.length-1; };
+    const E = (li,lj,fI,fJ)=>{
+      if (li===lj) return false;
+      const di=vs[li].i, dj=vs[lj].i;
+      if (di===dj) return false;
+      const k=di<dj?di+'_'+dj:dj+'_'+di;
+      if (keys.has(k)) return false;
+      if (dist(di,dj)/pitch < 1.35) return false;
+      keys.add(k); es.push([li,lj,fI,fJ]); return true;
+    };
+    return {vs,es,V,E};
+  }
+
+  /* fallback chord adder — same rules as E, safe on any indices.
+     (This replaces the broken out.E call.) */
+  function addChord(out, li, lj, fI, fJ){
+    if (li === lj) return false;
+    if (li < 0 || lj < 0 || li >= out.vs.length || lj >= out.vs.length) return false;
+    const di = out.vs[li].i, dj = out.vs[lj].i;
+    if (di === dj) return false;
+    const k = di<dj ? di+'_'+dj : dj+'_'+di;
+    if (keys.has(k)) return false;
+    if (dist(di,dj)/pitch < 1.35) return false;
+    keys.add(k); out.es.push([li,lj,fI,fJ]); return true;
+  }
+
+  /* ---- structure placement: corners full, centre a trace ---- */
+  function samplePos(){
+    for (let t=0; t<100; t++){
+      const x = x0 + rng()*W, y = y0 + rng()*H;
+      const nx = (x-cx)/(W*0.5), ny = (y-cy)/(H*0.5);
+      const rr = Math.min(1, Math.hypot(nx,ny)/1.414);
+      if (rng() < 0.05 + 0.95*Math.pow(rr, 2.4)) return {x, y};
+    }
+    return { x: x0+rng()*W, y: y0+rng()*H };
+  }
+
+  /* ---- constellation families (all vertices = real grid dots) ---- */
+
+  /* Dipper: skewed bowl + a handle that dives behind the silk */
+  function genDipper(a){
+    const {vs,es,V,E} = makeCtx();
+    const a0 = V(a, 0.15+rng()*0.25);
+    const b0 = V(at(a, 1.0+rng()*0.7, 1.8+rng()*0.7), 0.3+rng()*0.3);
+    const b1 = V(at(a, 2.6+rng()*0.9, 1.1+rng()*0.7), 0.25+rng()*0.3);
+    const b2 = V(at(a, 2.1+rng()*0.8, -0.5-rng()*0.6), -0.05+rng()*0.15);
+    E(a0,b0,0.20,0.22); E(b0,b1,0.20,0.20); E(b1,b2,0.19,0.20); E(b2,a0,0.18,0.20);
+    E(b0,b2,0.07,0.06);                                   /* faint diagonal */
+    const h1 = V(at(a, -1.7-rng()*0.8, -0.9-rng()*0.6), -0.25-rng()*0.2);
+    const h2 = V(at(vs[h1].i, -1.6-rng()*0.7, -0.7-rng()*0.6), -0.55-rng()*0.25);
+    E(a0,h1,0.17,0.15); E(h1,h2,0.16,0.14);
+    if (rng()<0.55){
+      const h3 = V(at(vs[h2].i, -1.3-rng()*0.8, -0.5-rng()*0.7), -0.8-rng()*0.2);
+      E(h2,h3,0.15,0.12);
+    }
+    return {vs,es};
+  }
+
+  /* Hourglass: shoulders in front of the silk, feet behind, belt brightest */
+  function genHourglass(a){
+    const {vs,es,V,E} = makeCtx();
+    const c0 = V(at(a, -(0.95+rng()*0.5), 0),  0.1);
+    const c1 = V(at(a,  (0.95+rng()*0.5), 0), -0.1);
+    const s0 = V(at(a, -(1.3+rng()*0.8),  1.8+rng()*0.9),  0.6+rng()*0.3);
+    const s1 = V(at(a,  (1.3+rng()*0.8),  1.8+rng()*0.9),  0.5+rng()*0.3);
+    const f0 = V(at(a, -(1.4+rng()*0.9), -(1.8+rng()*1.0)), -(0.5+rng()*0.4));
+    const f1 = V(at(a,  (1.4+rng()*0.9), -(1.8+rng()*1.0)), -(0.5+rng()*0.4));
+    E(s0,c0,0.21,0.20); E(s1,c1,0.20,0.19);
+    E(c0,c1,0.24,0.24);                                    /* belt */
+    E(c0,f0,0.18,0.17); E(c1,f1,0.18,0.17);
+    E(s0,s1,0.08,0.07); E(f0,f1,0.08,0.07);
+    if (rng()<0.4) E(s0,f1,0.06,0.05);                     /* long diagonal */
+    return {vs,es};
+  }
+
+  /* Cassiopeia: a rotated W template, alternating in front / behind */
+  function genCassiopeia(a){
+    const {vs,es,V,E} = makeCtx();
+    const th=rng()*6.283, cs=Math.cos(th), sn=Math.sin(th), sc=0.85+rng()*0.45;
+    const tp=[[0,0],[2.0,1.5],[3.7,0.2],[5.4,1.6],[7.1,0.3]];
+    const loc=[];
+    for (const [tx,ty] of tp){
+      const px=(tx*cs-ty*sn)*sc+(rng()-0.5)*0.5;
+      const py=(tx*sn+ty*cs)*sc+(rng()-0.5)*0.5;
+      const z=(vs.length%2===0? 1:-1)*(0.3+rng()*0.5);
+      loc.push(V(at(a,px,py), z));
+    }
+    for (let k=0;k<4;k++) E(loc[k],loc[k+1], 0.20+rng()*0.04, 0.19+rng()*0.04);
+    if (rng()<0.3) E(loc[0],loc[3], 0.07,0.06);
+    return {vs,es};
+  }
+
+  /* Crux: unequal diamond, sometimes a tail dropping behind the fabric */
+  function genCrux(a){
+    const {vs,es,V,E} = makeCtx();
+    const top = V(at(a,  0.3+rng()*0.5,  2.5+rng()*0.9),  0.7+rng()*0.2);
+    const bot = V(at(a, -0.3-rng()*0.5, -(2.1+rng()*0.9)), -(0.6+rng()*0.3));
+    const lft = V(at(a, -(1.5+rng()*0.7), 0.4+rng()*0.5), -0.3+rng()*0.2);
+    const rgt = V(at(a,  (1.4+rng()*0.7), -(0.3+rng()*0.5)), 0.2+rng()*0.2);
+    E(top,bot,0.22,0.21);
+    E(lft,rgt,0.18,0.17);
+    if (rng()<0.5) E(top,lft,0.07,0.06);
+    if (rng()<0.35){
+      const t1 = V(at(vs[bot].i, -0.4-rng()*0.8, -(2.8+rng()*1.2)), -(0.8+rng()*0.2));
+      E(bot,t1,0.15,0.13);
+      if (rng()<0.5){
+        const t2 = V(at(vs[t1].i, -0.6-rng()*0.9, -(2.2+rng()*1.0)), -0.9);
+        E(t1,t2,0.13,0.11);
+      }
+    }
+    return {vs,es};
+  }
+
+  /* Cygnus: cross with one long arm, arms at mixed depths */
+  function genCygnus(a){
+    const {vs,es,V,E} = makeCtx();
+    const th0 = rng()*6.283;
+    const c  = V(a, 0.05+rng()*0.2);
+    const up = V(pickAt(a, th0, 2.4, 3.2), 0.7+rng()*0.2);
+    const dn = V(pickAt(a, th0+3.1416+(rng()-0.5)*0.8, 1.5, 2.2), -0.55-rng()*0.25);
+    const lf = V(pickAt(a, th0-1.5708+(rng()-0.5)*0.9, 1.8, 2.6), 0.3+rng()*0.25);
+    const rt = V(pickAt(a, th0+1.5708+(rng()-0.5)*0.9, 1.7, 2.5), -0.2+rng()*0.2);
+    E(c,up,0.22,0.21); E(c,dn,0.16,0.15); E(c,lf,0.18,0.17); E(c,rt,0.16,0.15);
+    if (rng()<0.45) E(dn,rt,0.08,0.07);
+    if (rng()<0.30) E(up,lf,0.07,0.06);
+    return {vs,es};
+  }
+
+  /* Scorpius: a sweeping arc that tightens into a hook, diving behind */
+  function genScorpius(a){
+    const {vs,es,V,E} = makeCtx();
+    const n = 6 + (rng()*3|0);
+    const sgn = rng()<0.5 ? 1 : -1;
+    let heading = rng()*6.283;
+    let cur = V(a, 0.45+rng()*0.2);
+    let k=1, guard=0;
+    while (k<n && guard++<n*6){
+      let L, turn;
+      if (k < n*0.55){ turn=(rng()-0.5)*0.7; L=2.0+rng()*1.3; }
+      else           { turn=sgn*(0.7+rng()*0.7); L=1.3+rng()*0.8; }
+      heading += turn;
+      const z = 0.4 - 1.25*(k/(n-1)) + (rng()-0.5)*0.2;
+      const fA = k<3 ? 0.21+rng()*0.04 : 0.17+rng()*0.04;
+      const nv = V(pickAt(vs[cur].i, heading, L, L), z);
+      if (E(cur, nv, fA, fA*0.9)){ cur = nv; k++; }
+    }
+    if (vs.length >= 5){
+      if (rng()<0.35) E(0, 3, 0.07, 0.06);
+      if (rng()<0.25) E(1, 4, 0.06, 0.05);
+    }
+    return {vs,es};
+  }
+
+  /* Pleiades: tight cluster web + one faint trail leading away */
+  function genPleiades(a){
+    const {vs,es,V,E} = makeCtx();
+    const m = 5 + (rng()*2|0);
+    const th0 = rng()*6.283;
+    for (let k=0;k<m;k++){
+      const ang = th0 + k*2.4 + (rng()-0.5)*0.9;
+      const rad = 1.7+rng()*1.1;
+      V(at(a, Math.cos(ang)*rad, Math.sin(ang)*rad), (rng()-0.5)*1.1);
+    }
+    const pairs=[];
+    for (let x=0;x<vs.length;x++) for (let y=x+1;y<vs.length;y++){
+      if (vs[x].i===vs[y].i) continue;
+      pairs.push([x,y,dist(vs[x].i,vs[y].i)]);
+    }
+    pairs.sort((p,q)=>p[2]-q[2]);
+    let want = 4 + (rng()*3|0), got=0;
+    for (const pr of pairs){
+      if (got>=want) break;
+      if (E(pr[0],pr[1], 0.16+rng()*0.05, 0.14+rng()*0.05)) got++;
+    }
+    if (rng()<0.55){
+      const tv = V(pickAt(a, rng()*6.283, 4.0+rng()*2.5, 4.0+rng()*2.5), -0.6-rng()*0.3);
+      let best=-1, bd=1e9;
+      for (let x=0;x<vs.length;x++){
+        if (x===tv) continue;
+        const dd=dist(vs[x].i, vs[tv].i);
+        if (dd<bd){ bd=dd; best=x; }
+      }
+      if (best>=0) E(best, tv, 0.08, 0.06);
+    }
+    return {vs,es};
+  }
+
+  /* ---- grow the constellations ---- */
+  const lPos=[], lZ=[], lFade=[], lSt=[], lDu=[], lPe=[];
+  const NS = 92 + (rng()*14|0);
+  for (let s=0; s<NS; s++){
+    const p = samplePos();
+    const a = snap(p.x + (cx-p.x)*0.08, p.y + (cy-p.y)*0.08);
+
+    /* group schedule: lazy, biased early on first appearance */
+    const gp = 55 + rng()*35;
+    const g0 = Math.pow(rng(),1.8) * Math.max(1, gp-14);
+
+    /* one bad constellation must never kill the field */
+    let out = null;
+    try {
+      const roll = rng();
+      if      (roll < 0.16) out = genDipper(a);
+      else if (roll < 0.32) out = genHourglass(a);
+      else if (roll < 0.46) out = genCassiopeia(a);
+      else if (roll < 0.59) out = genCrux(a);
+      else if (roll < 0.73) out = genCygnus(a);
+      else if (roll < 0.88) out = genScorpius(a);
+      else                  out = genPleiades(a);
+    } catch (err){ out = null; }
+    if (!out || !out.vs || out.vs.length === 0) continue;
+
+    /* fallback: if rejections left it too thin, add a few faint chords */
+    if (out.es.length < 4 && out.vs.length >= 2){
+      for (let t=0; t<14 && out.es.length<4; t++){
+        const x=(rng()*out.vs.length)|0, y=(rng()*out.vs.length)|0;
+        addChord(out, x, y, 0.09+rng()*0.05, 0.08+rng()*0.04);
+      }
+    }
+
+    /* claim each star dot exactly once (first constellation wins) */
+    for (const v of out.vs){
+      if (claim.has(v.i)) continue;
+      const dur = 10 + rng()*3;
+      const per = Math.max(dur+10, gp + (rng()-0.5)*32);
+      const st  = Math.min(per-dur-1, Math.max(0, g0 + (rng()-0.5)*5));
+      claim.set(v.i, { z: v.z, boost: 0.25+rng()*0.15, st, dur, per });
+    }
+
+    /* emit lines — each endpoint copies its dot's authoritative schedule */
+    for (const e of out.es){
+      const di=out.vs[e[0]].i, dj=out.vs[e[1]].i;
+      const A=claim.get(di), B=claim.get(dj);
+      if (!A || !B) continue;              /* never break endpoint pairing */
+      lPos.push(dots[di].x, dots[di].y, 0);
+      lZ.push(A.z); lFade.push(e[2]); lSt.push(A.st); lDu.push(A.dur); lPe.push(A.per);
+      lPos.push(dots[dj].x, dots[dj].y, 0);
+      lZ.push(B.z); lFade.push(e[3]); lSt.push(B.st); lDu.push(B.dur); lPe.push(B.per);
+    }
+  }
+
+  /* ---- upload: dots (with per-dot star schedules) ---- */
+  const dz=new Array(N).fill(0), db=new Array(N).fill(0),
+        ds=new Array(N).fill(0), dd=new Array(N).fill(10), dp=new Array(N).fill(60);
+  claim.forEach((c,i)=>{ dz[i]=c.z; db[i]=c.boost; ds[i]=c.st; dd[i]=c.dur; dp[i]=c.per; });
+
+  gridPitch = pitch;
+  gridDots = dots.map((d, i) => ({ x: d.x, y: d.y, star: claim.has(i) }));
+
+  const pg = new THREE.BufferGeometry();
+  pg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(dPos), 3));
+  pg.setAttribute('aAlpha',   new THREE.BufferAttribute(new Float32Array(dA), 1));
+  pg.setAttribute('aTint',    new THREE.BufferAttribute(new Float32Array(dT), 1));
+  pg.setAttribute('aZOff',    new THREE.BufferAttribute(new Float32Array(dz), 1));
+  pg.setAttribute('aBoost',   new THREE.BufferAttribute(new Float32Array(db), 1));
+  pg.setAttribute('aStart',   new THREE.BufferAttribute(new Float32Array(ds), 1));
+  pg.setAttribute('aDur',     new THREE.BufferAttribute(new Float32Array(dd), 1));
+  pg.setAttribute('aPeriod',  new THREE.BufferAttribute(new Float32Array(dp), 1));
+  points.geometry.dispose(); points.geometry = pg;
+
+  /* ---- upload: lines ---- */
+  const lg = new THREE.BufferGeometry();
+  lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lPos), 3));
+  lg.setAttribute('aZOff',    new THREE.BufferAttribute(new Float32Array(lZ), 1));
+  lg.setAttribute('aFade',    new THREE.BufferAttribute(new Float32Array(lFade), 1));
+  lg.setAttribute('aStart',   new THREE.BufferAttribute(new Float32Array(lSt), 1));
+  lg.setAttribute('aDur',     new THREE.BufferAttribute(new Float32Array(lDu), 1));
+  lg.setAttribute('aPeriod',  new THREE.BufferAttribute(new Float32Array(lPe), 1));
+  lines.geometry.dispose(); lines.geometry = lg;
+}
+
+/* ------------------------------------------------------------------ */
+/*  interaction: eased parallax + the pull-out under the pointer       */
+/* ------------------------------------------------------------------ */
+const mouse = new THREE.Vector2(0,0), mouseE = new THREE.Vector2(0,0);
+let pointerInside = false, strength = 0;
+
+addEventListener('pointermove', e=>{
+  pointerInside = true;
+  mouse.set(e.clientX/innerWidth*2-1, -(e.clientY/innerHeight)*2+1);
+});
+addEventListener('pointerout', e=>{ if (!e.relatedTarget){ pointerInside=false; mouse.set(0,0); } });
+addEventListener('blur', ()=>{ pointerInside=false; mouse.set(0,0); });
+
+const clock = new THREE.Clock();
+const _hit=new THREE.Vector3(), _p=new THREE.Vector3(), _ray=new THREE.Ray();
+const camGoal = new THREE.Vector3();
+
+/* ------------------------------------------------------------------ */
+/*  neural links around the selection rectangle                        */
+/* ------------------------------------------------------------------ */
+const ACCENT = {
+  rgb: '161, 171, 189',   /* silver-blue of the constellation lines */
+  lineAlpha: 0.75,
+  fadeIn: 0.18,           /* seconds */
+  fadeOut: 0.07,
+  fuseGlow: 1,            /* 0 hides the glow where a link meets the border */
+  edgeBand: 1.8,          /* grid spacings from the border a dot may sit */
+  density: 0.6,           /* share of edge dots that join the mesh (corners always do) */
+  lean: 0.8,              /* grid spacings a dot's border point slides clockwise */
+  maxReach: 3.2,          /* longest link, grid spacings */
+  maxLinks: 160
+};
+
+/* Stable 0..1 per (dot, salt), so a dot keeps its shape while dragging. */
+function hash01(i, salt){
+  const v = Math.sin(i * 12.9898 + salt * 78.233) * 43758.5453;
+  return v - Math.floor(v);
+}
+let accentPitch = 48;
+const accentLinks = new Map();
+window.__accentLinks = accentLinks;
+
+/* z term of the shader's silkField, pointer term left out (Qt owns the mouse). */
+function silkZ(px, py, t){
+  let z = 0, s, ph;
+  s = Math.sin(px*0.230 + t*0.210);
+  z += 0.58 * s * Math.cos(py*0.190 - t*0.170);
+  ph = px*0.110 + py*0.160 + t*0.150;
+  z += 0.36 * Math.sin(ph);
+  ph = px*0.620 + py*0.440 + t*0.330;
+  z += 0.19 * Math.sin(ph);
+  ph = py*1.150 - t*0.470 + px*0.350;
+  z += 0.10 * Math.sin(ph);
+  z += 0.045 * Math.sin(px*2.100 + t*0.720) * Math.sin(py*1.900 - t*0.540);
+  return z;
+}
+
+const _local = new THREE.Vector3();
+function dotScreen(d){
+  _local.set(d.x, d.y, silkZ(d.x, d.y, shared.uTime.value));
+  field.localToWorld(_local);
+  _local.project(camera);
+  return { sx: (_local.x*0.5+0.5)*innerWidth, sy: (-_local.y*0.5+0.5)*innerHeight };
+}
+
+function screenPitch(pts){
+  const samples = [];
+  for (let i=0; i<pts.length && samples.length < 12; i++){
+    if (pts[i].star || !pts[i].onScreen) continue;
+    for (let j=i+1; j<pts.length && j<i+40; j++){
+      const local = Math.hypot(gridDots[i].x-gridDots[j].x, gridDots[i].y-gridDots[j].y);
+      if (local < gridPitch*0.5 || local > gridPitch*1.5) continue;
+      samples.push(Math.hypot(pts[i].sx-pts[j].sx, pts[i].sy-pts[j].sy));
+      break;
+    }
+  }
+  if (!samples.length) return 48;
+  samples.sort((a, b) => a - b);
+  return samples[samples.length >> 1];
+}
+
+function insideRect(p, sel){
+  return p.sx > sel.x && p.sx < sel.x + sel.w && p.sy > sel.y && p.sy < sel.y + sel.h;
+}
+
+const RECT_CORNERS = (sel) => [[sel.x, sel.y], [sel.x+sel.w, sel.y],
+                               [sel.x+sel.w, sel.y+sel.h], [sel.x, sel.y+sel.h]];
+const RECT_EDGES = (sel) => [[sel.x, sel.y, sel.w, 0], [sel.x+sel.w, sel.y, 0, sel.h],
+                             [sel.x+sel.w, sel.y+sel.h, -sel.w, 0], [sel.x, sel.y+sel.h, 0, -sel.h]];
+
+/* A dot's foot on its nearest side, slid clockwise (RECT_EDGES runs clockwise)
+   so every border link leans the same way. t is the unslid foot, 0..1. */
+function borderPoint(sel, p, pitch){
+  let best = null;
+  for (const [ex, ey, dx, dy] of RECT_EDGES(sel)){
+    const len2 = dx*dx + dy*dy;
+    if (!len2) continue;
+    const t = Math.max(0, Math.min(1, ((p.sx-ex)*dx + (p.sy-ey)*dy) / len2));
+    const d = Math.hypot(p.sx-(ex+dx*t), p.sy-(ey+dy*t));
+    if (best && d >= best.d) continue;
+    const s = Math.min(1, t + ACCENT.lean*pitch/Math.sqrt(len2));
+    best = { x: ex+dx*s, y: ey+dy*s, d, t };
+  }
+  return best;
+}
+
+const gridAligned = (i, j) =>
+  Math.abs(gridDots[i].x-gridDots[j].x) < 1e-4 || Math.abs(gridDots[i].y-gridDots[j].y) < 1e-4;
+
+/* Delaunay mesh of edge dots, their border points and the corners: the dual of
+   their Voronoi cells, so links never cross and every face is a triangle.
+   Keys name endpoints: 'c<k>' corner, 'b<i>' dot i's border point, '<i>' dot i. */
+function currentLinks(sel, pts, pitch){
+  const sites = RECT_CORNERS(sel).map((c, k) => ({ x: c[0], y: c[1], key: 'c'+k }));
+  for (let i=0; i<pts.length; i++){
+    const p = pts[i];
+    if (p.star || !p.onScreen || insideRect(p, sel) || hash01(i, 0) >= ACCENT.density) continue;
+    const b = borderPoint(sel, p, pitch);
+    if (!b || b.d > pitch*ACCENT.edgeBand) continue;
+    sites.push({ x: p.sx, y: p.sy, key: String(i), dot: i });
+    if (b.t > 0 && b.t < 1) sites.push({ x: b.x, y: b.y, key: 'b'+i });
+  }
+  const want = new Set();
+  if (sites.length < 3) return want;
+
+  const { triangles, halfedges } = Delaunator.from(sites, s => s.x, s => s.y);
+  const reach = pitch*ACCENT.maxReach;
+  for (let e=0; e<triangles.length && want.size < ACCENT.maxLinks; e++){
+    if (halfedges[e] > e) continue;                       /* each shared edge once */
+    const A = sites[triangles[e]], B = sites[triangles[e % 3 === 2 ? e-2 : e+1]];
+    if (A.dot == null && B.dot == null) continue;         /* would trace the border */
+    if (A.dot != null && B.dot != null && gridAligned(A.dot, B.dot)) continue;
+    if (Math.hypot(A.x-B.x, A.y-B.y) > reach) continue;
+    if (insideRect({ sx: (A.x+B.x)/2, sy: (A.y+B.y)/2 }, sel)) continue;
+    want.add(A.key < B.key ? A.key+'~'+B.key : B.key+'~'+A.key);
+  }
+  return want;
+}
+
+/* Recomputed every frame, so ends follow the silk and the rectangle. */
+function endpoint(key, sel, pts){
+  if (key[0] === 'c'){
+    const c = RECT_CORNERS(sel)[+key.slice(1)];
+    return { x: c[0], y: c[1] };
+  }
+  if (key[0] === 'b'){
+    const p = pts[+key.slice(1)];
+    return p ? borderPoint(sel, p, accentPitch) : null;
+  }
+  const p = pts[+key];
+  return p ? { x: p.sx, y: p.sy, dot: +key } : null;
+}
+
+let lastSel = null;
+
+function updateAccent(dt){
+  const canvas = document.getElementById('accent');
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(canvas.width/innerWidth, 0, 0, canvas.height/innerHeight, 0, 0);
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
+  const sel = window.__sel;
+  if (sel) lastSel = sel;
+  if (!gridDots.length || (!sel && !accentLinks.size)) return;
+
+  const pts = gridDots.map(d => {
+    const s = dotScreen(d);
+    return { sx: s.sx, sy: s.sy, star: d.star,
+             onScreen: s.sx > -200 && s.sx < innerWidth+200 && s.sy > -200 && s.sy < innerHeight+200 };
+  });
+  accentPitch = screenPitch(pts);
+  const want = sel ? currentLinks(sel, pts, accentPitch) : new Set();
+
+  for (const k of want){
+    if (!accentLinks.has(k)) accentLinks.set(k, { alpha: 0 });
+  }
+  const clipSel = sel || lastSel;
+  ctx.save();
+  if (clipSel){
+    ctx.beginPath();
+    ctx.rect(0, 0, innerWidth, innerHeight);
+    ctx.rect(clipSel.x, clipSel.y, clipSel.w, clipSel.h);
+    ctx.clip('evenodd');
+  }
+  const drawSel = sel || lastSel;
+  const glow = new Map(), fuse = [];
+  for (const [k, link] of accentLinks){
+    const target = want.has(k) ? 1 : 0;
+    const tau = target ? ACCENT.fadeIn : ACCENT.fadeOut;
+    link.alpha += (target - link.alpha) * (1 - Math.exp(-dt / tau));
+    if (link.alpha < 0.01 && !target){ accentLinks.delete(k); continue; }
+    if (!drawSel) continue;
+    const [ka, kb] = k.split('~');
+    const A = endpoint(ka, drawSel, pts), B = endpoint(kb, drawSel, pts);
+    if (!A || !B) continue;
+    ctx.strokeStyle = `rgba(${ACCENT.rgb}, ${link.alpha * ACCENT.lineAlpha})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+    for (const P of [A, B]){
+      if (P.dot != null){
+        if (target) glow.set(P.dot, Math.max(glow.get(P.dot) || 0, link.alpha));
+      } else if (ACCENT.fuseGlow) fuse.push({ x: P.x, y: P.y, alpha: link.alpha });
+    }
+  }
+  ctx.shadowColor = `rgba(${ACCENT.rgb}, 0.9)`;
+  ctx.shadowBlur = 8;
+  for (const [i, alpha] of glow){
+    const p = pts[i];
+    if (!p || (clipSel && insideRect(p, clipSel))) continue;
+    ctx.fillStyle = `rgba(${ACCENT.rgb}, ${alpha})`;
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, 2.5, 0, 6.2832); ctx.fill();
+  }
+  if (ACCENT.fuseGlow){
+    ctx.shadowBlur = 6;
+    for (const f of fuse){
+      ctx.fillStyle = `rgba(${ACCENT.rgb}, ${f.alpha * ACCENT.fuseGlow})`;
+      ctx.beginPath(); ctx.arc(f.x, f.y, 1.5, 0, 6.2832); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+renderer.setAnimationLoop(()=>{
+  const dt = Math.min(clock.getDelta(), 0.05);
+  shared.uTime.value  += dt * SPEED;
+  shared.uClock.value += dt;
+
+  mouseE.lerp(mouse, 1 - Math.exp(-dt*3.2));
+
+  if (!reduced){
+    camGoal.set(basePos.x + mouseE.x*1.7, basePos.y + mouseE.y*1.05, basePos.z);
+    camera.position.lerp(camGoal, 1 - Math.exp(-dt*2.0));
+  } else {
+    camera.position.copy(basePos);
+  }
+  camera.lookAt(baseTarget);
+  camera.updateMatrixWorld();
+
+  const sTarget = (pointerInside && !reduced) ? 1 : 0;
+  strength += (sTarget - strength) * (1 - Math.exp(-dt*1.8));
+  _p.set(mouseE.x, mouseE.y, 0.5).unproject(camera);
+  _ray.set(camera.position, _p.sub(camera.position).normalize());
+  if (strength > 0.003 && _ray.intersectPlane(sheetPlane, _hit)){
+    field.worldToLocal(_hit);
+    shared.uPointer.value.set(_hit.x, _hit.y, strength);
+  } else {
+    shared.uPointer.value.z = 0;
+  }
+  renderer.render(scene, camera);
+  updateAccent(dt);
+});
+
+/* ------------------------------------------------------------------ */
+/*  resize / grain / boot                                              */
+/* ------------------------------------------------------------------ */
+let rt = 0;
+function onResize(){
+  const w=innerWidth, h=innerHeight, dpr=Math.min(devicePixelRatio||1, 2);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(w, h);
+  const accent = document.getElementById('accent');
+  accent.width = Math.round(w*dpr);
+  accent.height = Math.round(h*dpr);
+  camera.aspect = w/Math.max(1,h);
+  camera.updateProjectionMatrix();
+  pointsMat.uniforms.uPixelRatio.value = dpr;
+}
+addEventListener('resize', ()=>{
+  onResize();
+  clearTimeout(rt); rt = setTimeout(buildField, 240);
+});
+
+(function grain(){
+  const c=document.createElement('canvas'); c.width=c.height=128;
+  const x=c.getContext('2d'), im=x.createImageData(128,128);
+  for (let i=0; i<im.data.length; i+=4){
+    const v=(108+Math.random()*76)|0;
+    im.data[i]=im.data[i+1]=im.data[i+2]=v; im.data[i+3]=255;
+  }
+  x.putImageData(im,0,0);
+  document.getElementById('grain').style.backgroundImage = `url(${c.toDataURL()})`;
+})();
+
+onResize();
+buildField();
+</script>
+</body>
+</html>

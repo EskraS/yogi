@@ -1,0 +1,1 @@
+"""Yogi application package."""
