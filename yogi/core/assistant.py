@@ -82,7 +82,7 @@ _MODULE_PROMPT_ADDENDUM = (
 )
 
 # Wait this long for a scan that is still running. Follow-ups keep previous
-# chess moves if a refresh finds no board or is not ready yet.
+# block notes if a refresh returns empty or is not ready yet.
 MODULE_WAIT_TIMEOUT_S = 1.5
 
 # One scan per screenshot. Late results for an old id are ignored.
@@ -984,16 +984,15 @@ def _run_modules_for_shot(
         _module_ready.set()
 
 
-def _chess_block_enabled():
-    for info in module_loader.scan_modules():
-        if info.get("id") == "chess":
-            return bool(info.get("enabled", True)) and not info.get("error")
-    return False
+def _followup_refresh_ids():
+    """Enabled blocks that ask to refresh on each follow-up turn."""
+    return module_loader.followup_refresh_ids()
 
 
-def _begin_followup_chess_scan():
-    """Full-screen chess refresh. The grab is never sent to the LLM."""
-    if not _module_ready.is_set() or not _chess_block_enabled():
+def _begin_followup_module_scan():
+    """Full-screen refresh for blocks with followup_refresh. Not sent to the LLM."""
+    module_ids = _followup_refresh_ids()
+    if not _module_ready.is_set() or not module_ids:
         return
     try:
         image = take_screenshot()
@@ -1001,7 +1000,7 @@ def _begin_followup_chess_scan():
         print(f"modules: follow-up capture failed: {exc}", flush=True)
         return
     _begin_screenshot_scan(
-        image, keep_previous_on_empty=True, module_ids=("chess",)
+        image, keep_previous_on_empty=True, module_ids=module_ids
     )
 
 
@@ -1057,8 +1056,8 @@ def run_yogi():
         image, encoded = shot
 
         # First scan uses the activation screenshot. Follow-ups recapture the
-        # full screen for chess only; the LLM keeps this image until the user
-        # takes a follow-up screenshot with the hotkey.
+        # full screen for blocks with followup_refresh; the LLM keeps this
+        # image until the user takes a follow-up screenshot with the hotkey.
         _begin_screenshot_scan(image)
         fresh_shot = True
 
@@ -1098,7 +1097,7 @@ def run_yogi():
                 _stop_recording.clear()
                 _cancel_recording.clear()
                 if not fresh_shot:
-                    _begin_followup_chess_scan()
+                    _begin_followup_module_scan()
                 if awaiting_followup:
                     print(
                         f"Awaiting followup question ({no_speech_timeout:g}s, "

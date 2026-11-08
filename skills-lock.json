@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "license-chooser": {
+      "source": "shelbeely/shelbeely-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/license-chooser/SKILL.md",
+      "computedHash": "040f607e2eeec4279d2f03cbd2f967894e31ecded6c99d80b407fa6d8f909c83"
+    }
+  }
+}

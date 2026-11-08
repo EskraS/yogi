@@ -234,7 +234,7 @@ class TestFollowUpLoop(unittest.TestCase):
                 mock.patch.object(yogi, "listen_for_question", fake_listen), \
                 mock.patch.object(yogi, "ask_yogi", fake_ask), \
                 mock.patch.object(yogi, "speak_yogi", lambda chunks, _s: list(chunks)), \
-                mock.patch.object(yogi, "_chess_block_enabled", return_value=True), \
+                mock.patch.object(yogi, "_followup_refresh_ids", return_value=("chess",)), \
                 mock.patch.object(yogi.module_loader, "run_enabled_modules", modules), \
                 mock.patch.object(yogi.history_store, "save_chat"):
             yogi.run_yogi()
@@ -366,7 +366,7 @@ class TestHotkeyFollowUpScreenshot(unittest.TestCase):
                 mock.patch.object(yogi, "listen_for_question", fake_listen), \
                 mock.patch.object(yogi, "ask_yogi", fake_ask), \
                 mock.patch.object(yogi, "speak_yogi", lambda chunks, _s: list(chunks)), \
-                mock.patch.object(yogi, "_chess_block_enabled", return_value=False), \
+                mock.patch.object(yogi, "_followup_refresh_ids", return_value=()), \
                 mock.patch.object(yogi.module_loader, "run_enabled_modules", return_value=""), \
                 mock.patch.object(yogi.base64, "b64decode", return_value=b""), \
                 mock.patch.object(yogi.history_store, "save_chat"):

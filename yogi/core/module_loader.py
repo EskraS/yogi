@@ -1,12 +1,12 @@
-import importlib.util
 import json
 import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
+import tempfile
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
 from yogi.paths import ROOT
@@ -82,6 +82,7 @@ def scan_modules(root=None):
             "description": "",
             "error": None,
             "enabled": _read_enabled(folder),
+            "followup_refresh": False,
         }
         path = folder / "manifest.json"
 
@@ -107,6 +108,7 @@ def scan_modules(root=None):
                 entry["name"] = data["name"]
             if isinstance(data.get("description"), str):
                 entry["description"] = data["description"]
+            entry["followup_refresh"] = data.get("followup_refresh") is True
 
         entry["error"] = validate_manifest(data)
         results.append(entry)
@@ -467,7 +469,7 @@ def install_module(zip_path, root=None):
     return None
 
 
-# Per-module cap so a stuck Stockfish call cannot block the LLM forever.
+# Per-block cap so a stuck helper cannot block the LLM forever.
 MODULE_RUN_TIMEOUT_S = 8
 
 
@@ -490,62 +492,93 @@ def _read_entry_name(folder):
     return name
 
 
-def _load_module_entry(folder, entry_name):
-    """Import entry_name from folder so sibling imports resolve."""
-    path = (folder / entry_name).resolve()
-    if not path.is_file() or not _under_root(path, folder):
-        return None
-    folder_str = str(folder.resolve())
-    added = folder_str not in sys.path
-    if added:
-        sys.path.insert(0, folder_str)
-    # Unique name so two blocks with the same entry file do not collide.
-    # Hyphens (chess-module.py) are not valid in a Python module name.
-    stem = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in path.stem)
-    mod_name = f"yogi_block_{folder.name}_{stem}"
+def _block_command(entry_path):
+    """Command list for one block entry. .py needs a Python interpreter."""
+    if entry_path.suffix.lower() == ".exe":
+        return [str(entry_path)]
+    return [sys.executable, str(entry_path)]
+
+
+def _run_block_process(folder, entry_name, image, module_id):
+    """Run the block as its own process. Never import plugin code into Yogi.
+
+    shortcut: one process per scan costs ~1-2s cold start, upgrade to a
+    long-lived worker if latency hurts.
+    """
+    entry_path = (folder / entry_name).resolve()
+    if not entry_path.is_file() or not _under_root(entry_path, folder):
+        print(f"module {module_id}: entry file missing", flush=True)
+        return ""
+
+    png_path = None
     try:
-        spec = importlib.util.spec_from_file_location(mod_name, path)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[mod_name] = mod
-        spec.loader.exec_module(mod)
-        return mod
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            png_path = tmp.name
+        image.save(png_path, format="PNG")
+
+        cmd = _block_command(entry_path) + [png_path]
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        kwargs = {
+            "cwd": str(folder.resolve()),
+            "capture_output": True,
+            "timeout": MODULE_RUN_TIMEOUT_S,
+            "env": env,
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        completed = subprocess.run(cmd, **kwargs)
+    except subprocess.TimeoutExpired:
+        print(
+            f"module {module_id}: timed out after {MODULE_RUN_TIMEOUT_S}s",
+            flush=True,
+        )
+        return ""
     except Exception as exc:
-        print(f"module {folder.name}: import failed: {exc}", flush=True)
-        return None
+        print(f"module {module_id}: {exc}", flush=True)
+        return ""
     finally:
-        if added:
+        if png_path is not None:
             try:
-                sys.path.remove(folder_str)
-            except ValueError:
+                os.unlink(png_path)
+            except OSError:
                 pass
 
+    stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
+    for line in stderr.splitlines():
+        if line.strip():
+            print(f"module {module_id}: {line}", flush=True)
 
-def _call_module_run(folder, mod, image):
-    run = getattr(mod, "run", None)
-    if not callable(run):
-        print(f"module {folder.name}: no run(image) function", flush=True)
+    if completed.returncode != 0:
+        print(
+            f"module {module_id}: exited with code {completed.returncode}",
+            flush=True,
+        )
         return ""
-    try:
-        result = run(image)
-    except Exception as exc:
-        print(f"module {folder.name}: run failed: {exc}", flush=True)
-        return ""
-    if result is None:
-        return ""
-    if not isinstance(result, str):
-        print(f"module {folder.name}: run() must return str", flush=True)
-        return ""
-    return result.strip()
+
+    text = (completed.stdout or b"").decode("utf-8", errors="replace").strip()
+    return text
+
+
+def followup_refresh_ids(root=None):
+    """Ids of enabled blocks that opt into follow-up screenshot refreshes."""
+    ids = []
+    for info in scan_modules(root):
+        if info.get("error") or not info.get("enabled", True):
+            continue
+        if info.get("followup_refresh"):
+            ids.append(info["id"])
+    return tuple(ids)
 
 
 def run_enabled_modules(image, root=None, module_ids=None):
-    """Run every enabled block's run(image). Returns joined text, or \"\".
+    """Run every enabled block as a subprocess. Returns joined text, or \"\".
 
-    Display-only modules (no entry / no run) are skipped. Errors and timeouts
-    print to the terminal and add nothing. module_ids, if given, limits the
-    run to those folder ids (e.g. follow-up chess refresh).
+    Each block receives a temporary PNG path as argv[1] and writes result text
+    to stdout. Logs go to stderr. Display-only modules (no entry) are skipped.
+    Errors and timeouts print to the terminal and add nothing. module_ids, if
+    given, limits the run to those folder ids (e.g. follow-up refresh).
     """
     allowed = None if module_ids is None else set(module_ids)
     parts = []
@@ -558,21 +591,8 @@ def run_enabled_modules(image, root=None, module_ids=None):
         entry_name = _read_entry_name(folder)
         if not entry_name:
             continue
-        mod = _load_module_entry(folder, entry_name)
-        if mod is None:
-            continue
         label = info.get("name") or info["id"]
-        try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                text = pool.submit(_call_module_run, folder, mod, image).result(
-                    timeout=MODULE_RUN_TIMEOUT_S
-                )
-        except FuturesTimeout:
-            print(f"module {info['id']}: timed out after {MODULE_RUN_TIMEOUT_S}s", flush=True)
-            continue
-        except Exception as exc:
-            print(f"module {info['id']}: {exc}", flush=True)
-            continue
+        text = _run_block_process(folder, entry_name, image, info["id"])
         if text:
             parts.append(f"[{label}]\n{text}")
     return "\n\n".join(parts)

@@ -5,6 +5,18 @@ This file is for attribution and license awareness; it is not legal advice.
 License texts are those of the upstream projects - consult each project for the
 authoritative terms, especially before commercial distribution.
 
+Yogi itself is licensed under PolyForm Noncommercial 1.0.0 (`LICENSE.txt`).
+
+## Blocks (separate programs)
+
+Installed blocks under `modules/` are separate programs. Each block carries its
+own license and dependencies. Yogi starts a block as its own process, passes a
+screenshot path, and reads text from stdout. Block code is never imported into
+the Yogi process. GPL (or other) block licenses do not apply to Yogi core.
+
+Chess (python-chess, Stockfish, ONNX board recognition, chessimg2pos/ChessSnip)
+belongs in the chess block repo, not in Yogi notices.
+
 ## Critical copyleft / dual-license components
 
 ### PySide6 (Qt for Python) + Qt WebEngine
@@ -18,10 +30,6 @@ authoritative terms, especially before commercial distribution.
   source. WebEngine also includes Chromium third-party components with their
   own notices.
 - https://doc.qt.io/qtforpython-6/licenses.html
-
-### python-chess (`chess`)
-- License: GPL-3.0-or-later
-- https://github.com/niklasf/python-chess
 
 ### PyAV (`av`) + FFmpeg
 - PyAV: BSD-style (see upstream LICENSE)
@@ -42,7 +50,6 @@ authoritative terms, especially before commercial distribution.
 | websocket-client | Apache-2.0 |
 | faster-whisper | MIT |
 | keyring | MIT / PSF-style |
-| onnxruntime | MIT |
 
 Also keep licenses for transitive deps installed with the above
 (e.g. ctranslate2, tokenizers, huggingface_hub) when shipping a bundle.
@@ -69,15 +76,9 @@ Also keep licenses for transitive deps installed with the above
 
 ## Distribution checklist
 
-- [ ] Decide Yogi’s own `LICENSE`.
+- [x] Yogi `LICENSE.txt` is PolyForm Noncommercial 1.0.0 with Required Notice.
 - [ ] Ship the LGPL-3.0 text and keep Qt/PySide6 libraries replaceable in bundles.
-- [ ] Re-check `chess` (GPL-3.0) and FFmpeg/PyAV for closed-source compatibility.
+- [ ] Re-check FFmpeg/PyAV for your distribution story.
 - [ ] Ship Inter `OFL.txt` and do not remove Font Awesome attribution.
 - [ ] Include this notices file (or equivalent) with binary releases.
-
-## Chess piece classifier and board finder
-- Source: chessimg2pos by Marcodicio (https://github.com/mdicio/chessimg2pos),
-  via ChessSnip (https://github.com/DaoraDio/ChessSnip)
-- License: MIT, Copyright (c) 2025 Marcodicio
-- Used for: the ONNX piece model and the board-detection code in the chess block
-- The full MIT license text must be included with this notice.
+- [ ] Do not ship community blocks inside the Yogi core package; they keep their own licenses.
