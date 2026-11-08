@@ -11,9 +11,9 @@ import threading
 
 import numpy as np
 import sounddevice as sd
-from PyQt6.QtCore import QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import QWidget
 
 from yogi.audio.devices import MAX_SPEECH_THRESHOLD, MIN_SPEECH_THRESHOLD
 from yogi.ui.theme_helpers import ACCENT_GREEN
@@ -156,9 +156,9 @@ class MicThresholdSlider(QWidget):
     """Grey bar with a draggable green-ringed threshold knob and a white live-level marker."""
 
     # Emitted with the new threshold (RMS) when the user finishes moving it.
-    threshold_changed = pyqtSignal(float)
+    threshold_changed = Signal(float)
     # Emitted continuously while dragging, for the value label.
-    threshold_moved = pyqtSignal(float)
+    threshold_moved = Signal(float)
 
     _KNOB = 14
     _TRACK_H = 6

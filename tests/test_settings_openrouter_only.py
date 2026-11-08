@@ -6,8 +6,8 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint
-from PyQt6.QtWidgets import QApplication, QComboBox, QLabel, QRadioButton, QSlider
+from PySide6.QtCore import QPoint
+from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QRadioButton, QSlider
 
 from yogi.audio import vocal
 from yogi.ui.settings import PromptEditorDialog, RecordButton, SettingsTab, vision_model_info

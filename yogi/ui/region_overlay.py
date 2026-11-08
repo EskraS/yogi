@@ -2,11 +2,11 @@ import threading
 import traceback
 
 from PIL import Image
-from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QObject, QUrl, QTimer, pyqtSignal, QEventLoop
-from PyQt6.QtGui import QPainter, QPen, QColor, QPixmap, QImage, QMouseEvent, QKeyEvent
-from PyQt6.QtWebEngineCore import QWebEngineSettings
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QWidget, QApplication
+from PySide6.QtCore import Qt, QPoint, QRect, QRectF, QObject, QUrl, QTimer, Signal, QEventLoop
+from PySide6.QtGui import QPainter, QPen, QColor, QPixmap, QImage, QMouseEvent, QKeyEvent
+from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QWidget, QApplication
 
 from yogi.paths import asset
 
@@ -252,7 +252,7 @@ class RegionSelectOverlay(QWidget):
 class RegionSelectBridge(QObject):
     """Lets the hotkey thread run the overlay on the Qt GUI thread and wait for it."""
 
-    _show_overlay = pyqtSignal()
+    _show_overlay = Signal()
 
     def __init__(self):
         super().__init__()

@@ -73,10 +73,10 @@ class TestSavedThreshold(unittest.TestCase):
 
 class TestStopHotkeySetting(unittest.TestCase):
     def test_record_escape_as_stop_key_and_reject_duplicates(self):
-        from PyQt6.QtCore import QSettings, Qt
-        from PyQt6.QtGui import QKeyEvent
-        from PyQt6.QtCore import QEvent
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtCore import QSettings, Qt
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QApplication
 
         app = QApplication.instance() or QApplication([])
         from yogi.ui import settings

@@ -1,10 +1,10 @@
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QGridLayout, QSizePolicy, QFileDialog, QMessageBox,
     QGraphicsOpacityEffect, QApplication,
 )
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtSignal, pyqtProperty
-from PyQt6.QtGui import QColor, QFontMetrics
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Signal, Property
+from PySide6.QtGui import QColor, QFontMetrics
 import qtawesome as qta
 
 from yogi.core.module_loader import (
@@ -54,7 +54,7 @@ TOGGLE_OFF_KNOB_COLOR = "#bdbdbd"
 # Toggle Switch Widget
 # ──────────────────────────────────────────────
 class ToggleSwitch(QWidget):
-    toggled = pyqtSignal(bool)
+    toggled = Signal(bool)
 
     def __init__(self, enabled=True, parent=None):
         super().__init__(parent)
@@ -68,7 +68,7 @@ class ToggleSwitch(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QBrush
+        from PySide6.QtGui import QPainter, QBrush
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -100,8 +100,8 @@ class ToggleSwitch(QWidget):
 # Block Card
 # ──────────────────────────────────────────────
 class BlockCard(QWidget):
-    remove_requested = pyqtSignal(str)
-    toggle_requested = pyqtSignal(str, bool)
+    remove_requested = Signal(str)
+    toggle_requested = Signal(str, bool)
 
     def __init__(self, block: dict, theme="dark", parent=None):
         super().__init__(parent)
@@ -232,7 +232,7 @@ class BlockCard(QWidget):
         self._hover_t = max(0.0, min(1.0, float(value)))
         self._apply_card_shell_style()
 
-    hover_t = pyqtProperty(float, fget=_get_hover_t, fset=_set_hover_t)
+    hover_t = Property(float, fget=_get_hover_t, fset=_set_hover_t)
 
     def apply_theme(self, theme: str):
         self._theme = theme

@@ -1,12 +1,12 @@
 import html
 from datetime import datetime
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel,
     QScrollArea, QSizePolicy, QPushButton, QLineEdit,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QUrl
-from PyQt6.QtGui import QPixmap, QDesktopServices
+from PySide6.QtCore import Qt, Signal, QTimer, QSize, QUrl
+from PySide6.QtGui import QPixmap, QDesktopServices
 import qtawesome as qta
 
 from yogi.core import history_store
@@ -94,8 +94,8 @@ class TrashButton(QPushButton):
 
 # ── Sidebar conversation item ─────────────────────────────────────────────────
 class ConversationItem(QWidget):
-    clicked = pyqtSignal(str)
-    delete_requested = pyqtSignal(str)
+    clicked = Signal(str)
+    delete_requested = Signal(str)
 
     def __init__(self, conv: dict, theme="dark", parent=None):
         super().__init__(parent)
@@ -302,7 +302,7 @@ class ChatMessage(QWidget):
 # ── Main HistoryTab ────────────────────────────────────────────────────────────
 class HistoryTab(QWidget):
     # Emitted from the hotkey thread by history_store; delivered on the UI thread.
-    chat_saved = pyqtSignal(dict)
+    chat_saved = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)

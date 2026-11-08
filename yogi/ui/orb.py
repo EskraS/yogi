@@ -15,10 +15,10 @@ os.environ.setdefault(
     "--allow-file-access-from-files --disable-accelerated-video-encode",
 )
 
-from PyQt6.QtCore import Qt, QUrl, QObject, pyqtSignal
-from PyQt6.QtWebEngineCore import QWebEngineSettings
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtCore import Qt, QUrl, QObject, Signal
+from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QApplication, QMainWindow
 
 # Required before QApplication exists, or the web view cannot composite alpha.
 QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
@@ -158,9 +158,9 @@ class OrbWindow(QMainWindow):
 class OrbBridge(QObject):
     """Thread-safe show, hide, and level updates for the hotkey thread."""
 
-    _show = pyqtSignal()
-    _hide = pyqtSignal()
-    _levels = pyqtSignal(float, float, float)
+    _show = Signal()
+    _hide = Signal()
+    _levels = Signal(float, float, float)
 
     def __init__(self, window: OrbWindow):
         super().__init__()

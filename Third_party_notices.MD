@@ -2,18 +2,22 @@
 
 Yogi uses the following third-party software and assets.
 This file is for attribution and license awareness; it is not legal advice.
-License texts are those of the upstream projects — consult each project for the
+License texts are those of the upstream projects - consult each project for the
 authoritative terms, especially before commercial distribution.
 
 ## Critical copyleft / dual-license components
 
-### PyQt6 / PyQt6-WebEngine
-- Vendor: Riverbank Computing
-- License: GPL-3.0 **or** Riverbank commercial license
-- Notes: Free PyPI wheels are GPL-3.0. Proprietary distribution generally
-  requires a commercial PyQt (and WebEngine) license from Riverbank.
-  Qt libraries themselves are typically LGPL/GPL depending on module;
-  WebEngine also includes Chromium third-party components.
+### PySide6 (Qt for Python) + Qt WebEngine
+- Vendor: The Qt Company
+- License: LGPL-3.0 **or** GPL-2.0/GPL-3.0 **or** Qt commercial license
+- Notes: Yogi uses PySide6 under LGPL-3.0. The Qt modules used (QtCore, QtGui,
+  QtWidgets, QtSvg, QtWebEngine) are available under LGPL-3.0.
+  LGPL obligations when distributing: ship the LGPL-3.0 text, keep Qt/PySide6
+  as separate replaceable shared libraries (no static linking), do not forbid
+  reverse engineering for debugging those changes, and point to the Qt/PySide6
+  source. WebEngine also includes Chromium third-party components with their
+  own notices.
+- https://doc.qt.io/qtforpython-6/licenses.html
 
 ### python-chess (`chess`)
 - License: GPL-3.0-or-later
@@ -65,8 +69,15 @@ Also keep licenses for transitive deps installed with the above
 
 ## Distribution checklist
 
-- [ ] Decide Yogi’s own `LICENSE` (GPL-compatible if using free PyQt without a commercial license).
-- [ ] If shipping closed-source: obtain commercial PyQt (+ WebEngine) as needed.
-- [ ] Re-check `chess` and FFmpeg/PyAV for closed-source compatibility.
+- [ ] Decide Yogi’s own `LICENSE`.
+- [ ] Ship the LGPL-3.0 text and keep Qt/PySide6 libraries replaceable in bundles.
+- [ ] Re-check `chess` (GPL-3.0) and FFmpeg/PyAV for closed-source compatibility.
 - [ ] Ship Inter `OFL.txt` and do not remove Font Awesome attribution.
 - [ ] Include this notices file (or equivalent) with binary releases.
+
+## Chess piece classifier and board finder
+- Source: chessimg2pos by Marcodicio (https://github.com/mdicio/chessimg2pos),
+  via ChessSnip (https://github.com/DaoraDio/ChessSnip)
+- License: MIT, Copyright (c) 2025 Marcodicio
+- Used for: the ONNX piece model and the board-detection code in the chess block
+- The full MIT license text must be included with this notice.

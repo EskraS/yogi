@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication,
     QWidget,
     QVBoxLayout,
@@ -21,8 +21,8 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QSizePolicy,
 )
-from PyQt6.QtGui import QPainter, QColor, QFont
-from PyQt6.QtCore import (
+from PySide6.QtGui import QPainter, QColor, QFont
+from PySide6.QtCore import (
     Qt,
     QEvent,
     QPoint,
@@ -36,8 +36,8 @@ from PyQt6.QtCore import (
     QParallelAnimationGroup,
     QEasingCurve,
     QTimer,
-    pyqtProperty,
-    pyqtSignal,
+    Property,
+    Signal,
 )
 import json
 import os
@@ -171,7 +171,7 @@ _BTN_TOKENS = {
 
 
 class RecordButton(QWidget):
-    clicked = pyqtSignal()
+    clicked = Signal()
 
     def __init__(self, text="Record", parent=None):
         super().__init__(parent)
@@ -198,7 +198,7 @@ class RecordButton(QWidget):
         self._hover_t = max(0.0, min(1.0, float(t)))
         self.update()
 
-    hover_t = pyqtProperty(float, get_hover_t, set_hover_t)
+    hover_t = Property(float, get_hover_t, set_hover_t)
 
     def setRecording(self, recording: bool):
         self._recording = bool(recording)
@@ -291,7 +291,7 @@ class RecordButton(QWidget):
 class CheckButton(RecordButton):
     """RecordButton that stays on or off. Same hover animation."""
 
-    toggled = pyqtSignal(bool)
+    toggled = Signal(bool)
 
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
@@ -342,7 +342,7 @@ class CheckButton(RecordButton):
 class ClickableLineEdit(QLineEdit):
     """Read-only field that opens an editor when clicked."""
 
-    clicked = pyqtSignal()
+    clicked = Signal()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -476,9 +476,9 @@ class IdComboBox(NoWheelComboBox):
     opens the list; "Add a new voice id" clears it for typing.
     """
 
-    add_requested = pyqtSignal(str)
+    add_requested = Signal(str)
     # currentTextChanged minus the add_label row being picked.
-    id_text_changed = pyqtSignal(str)
+    id_text_changed = Signal(str)
 
     _ADD_SIZE = 24
     _ADD_MARGIN = 2
@@ -590,7 +590,7 @@ class NoWheelSlider(QSlider):
 class EyeToggleButton(QWidget):
     """Toggle visibility: mdi.eye when masked, mdi.eye-off when plain text (same hover as Record)."""
 
-    clicked = pyqtSignal()
+    clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -615,7 +615,7 @@ class EyeToggleButton(QWidget):
         self._hover_t = max(0.0, min(1.0, float(t)))
         self.update()
 
-    hover_t = pyqtProperty(float, get_hover_t, set_hover_t)
+    hover_t = Property(float, get_hover_t, set_hover_t)
 
     def setRevealed(self, revealed: bool):
         self._revealed = bool(revealed)
@@ -699,8 +699,8 @@ class DeletableItemDelegate(QStyledItemDelegate):
     instead of selecting the row.
     """
 
-    delete_requested = pyqtSignal(int)
-    edit_requested = pyqtSignal(int)
+    delete_requested = Signal(int)
+    edit_requested = Signal(int)
 
     def __init__(self, combo: QComboBox, parts=("edit", "trash")):
         super().__init__(combo)
@@ -1128,9 +1128,9 @@ class ApiKeyRow(QWidget):
     receives submitted() and calls save() once the key checks out.
     """
 
-    submitted = pyqtSignal(str)
-    deleted = pyqtSignal()
-    storage_failed = pyqtSignal(str)
+    submitted = Signal(str)
+    deleted = Signal()
+    storage_failed = Signal(str)
 
     EMPTY, SAVED, REPLACING = range(3)
 
@@ -1411,15 +1411,15 @@ def _check_openrouter_model_up(key: str, model: str):
 
 
 class SettingsTab(QWidget):
-    settings_changed = pyqtSignal(dict)
-    theme_changed = pyqtSignal(str)
+    settings_changed = Signal(dict)
+    theme_changed = Signal(str)
     # check id, vision model ids (None on failure), error message
-    _openrouter_checked = pyqtSignal(int, object, str)
+    _openrouter_checked = Signal(int, object, str)
     # a key-checked provider id ("xai", "openrouter_tts", "fish_audio"), "or_models"
     # ({model: voices}), "or_style" or "voice"; check id, result (None on failure), error
-    _vocal_checked = pyqtSignal(str, int, object, str)
+    _vocal_checked = Signal(str, int, object, str)
     # model id, "" when up or the message when its providers are down
-    _model_status_checked = pyqtSignal(str, str)
+    _model_status_checked = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -1,7 +1,7 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QGraphicsDropShadowEffect
-from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QRectF, QPropertyAnimation, QEasingCurve, QTimer
-from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, Signal, QByteArray, QRectF, QPropertyAnimation, QEasingCurve, QTimer
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtGui import QIcon, QPixmap, QColor, QPainter
 
 from yogi.paths import asset
 
@@ -40,7 +40,7 @@ _ANIM_STEPS = 18
 
 
 class HomeTab(QWidget):
-    yogi_toggled = pyqtSignal(bool)
+    yogi_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)

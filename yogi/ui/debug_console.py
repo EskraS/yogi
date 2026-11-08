@@ -8,9 +8,9 @@ import sys
 import threading
 import traceback
 
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
@@ -29,7 +29,7 @@ _installed = False
 class LogBuffer(QObject):
     """Thread-safe text log. chunk_ready is emitted after the lock is released."""
 
-    chunk_ready = pyqtSignal(int, str)
+    chunk_ready = Signal(int, str)
 
     def __init__(self):
         super().__init__()

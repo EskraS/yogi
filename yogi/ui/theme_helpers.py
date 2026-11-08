@@ -185,7 +185,7 @@ def slider_stylesheet(
 
 def mix_hex(c1: str, c2: str, t: float) -> str:
     """Linearly interpolate between two hex colours; t in [0, 1]."""
-    from PyQt6.QtGui import QColor
+    from PySide6.QtGui import QColor
 
     a = QColor(c1)
     b = QColor(c2)

@@ -1,5 +1,5 @@
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QSizePolicy
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QSizePolicy
+from PySide6.QtCore import Qt, Signal
 import qtawesome as qta
 
 # Theme tokens for the title bar, keyed by theme name.
@@ -26,9 +26,9 @@ _THEMES = {
 
 
 class TitleBar(QWidget):
-    tab_changed = pyqtSignal(str)
-    settings_clicked = pyqtSignal()
-    maximize_clicked = pyqtSignal()
+    tab_changed = Signal(str)
+    settings_clicked = Signal()
+    maximize_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)

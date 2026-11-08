@@ -5,7 +5,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 from yogi.ui.settings import SettingsTab, theme_palette
 from yogi.ui.theme_helpers import slider_stylesheet

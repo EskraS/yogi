@@ -8,9 +8,9 @@ if sys.platform == "win32":
 # Orb configures WebEngine / OpenGL attrs before QApplication exists.
 from yogi.ui.orb import OrbBridge, OrbWindow  # noqa: E402
 
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QStackedWidget
-from PyQt6.QtCore import Qt, QPoint, QRect
-from PyQt6.QtGui import QFontDatabase, QFont, QIcon, QColor, QMouseEvent
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QStackedWidget
+from PySide6.QtCore import Qt, QPoint, QRect
+from PySide6.QtGui import QFontDatabase, QFont, QIcon, QColor, QMouseEvent
 
 from yogi.paths import asset
 from yogi.core import history_store
