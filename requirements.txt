@@ -7,6 +7,11 @@ mss>=10.1
 Pillow>=12.1
 keyboard>=0.13
 websocket-client>=1.9
-faster-whisper>=1.2
-av>=18.1
+# faster-whisper wants PyAV (GPL FFmpeg) only for file decoding, which Yogi never uses.
+# Install it without deps after this file: pip install --no-deps "faster-whisper>=1.2,<2"
+ctranslate2>=4.0,<5
+huggingface-hub>=0.21
+tokenizers>=0.13,<1
+onnxruntime>=1.14,<2
+tqdm
 keyring>=25.7

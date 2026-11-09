@@ -2,57 +2,104 @@
 
 Yogi uses the following third-party software and assets.
 This file is for attribution and license awareness; it is not legal advice.
-License texts are those of the upstream projects - consult each project for the
-authoritative terms, especially before commercial distribution.
+License texts are those of the upstream projects — consult each project for the
+authoritative terms, especially before distribution.
 
 Yogi itself is licensed under PolyForm Noncommercial 1.0.0 (`LICENSE.txt`).
+Required Notice: Copyright (c) 2026 EskraS.
 
 ## Blocks (separate programs)
 
-Installed blocks under `modules/` are separate programs. Each block carries its
-own license and dependencies. Yogi starts a block as its own process, passes a
+Installed blocks under `modules/` are separate programs, not part of Yogi’s
+licensed work. Each block carries its own license and dependencies and should
+ship its own notices. Yogi starts a block as its own process, passes a
 screenshot path, and reads text from stdout. Block code is never imported into
-the Yogi process. GPL (or other) block licenses do not apply to Yogi core.
+the Yogi process.
 
-Chess (python-chess, Stockfish, ONNX board recognition, chessimg2pos/ChessSnip)
-belongs in the chess block repo, not in Yogi notices.
+Yogi’s PolyForm Noncommercial terms apply to Yogi. A block’s terms apply to
+that block. Do not assume a block’s license (including GPL) extends to Yogi
+core, or that Yogi’s license covers the block.
 
 ## Critical copyleft / dual-license components
 
-### PySide6 (Qt for Python) + Qt WebEngine
+### PySide6 + shiboken6 (Qt for Python) + Qt WebEngine
 - Vendor: The Qt Company
-- License: LGPL-3.0 **or** GPL-2.0/GPL-3.0 **or** Qt commercial license
-- Notes: Yogi uses PySide6 under LGPL-3.0. The Qt modules used (QtCore, QtGui,
-  QtWidgets, QtSvg, QtWebEngine) are available under LGPL-3.0.
-  LGPL obligations when distributing: ship the LGPL-3.0 text, keep Qt/PySide6
-  as separate replaceable shared libraries (no static linking), do not forbid
-  reverse engineering for debugging those changes, and point to the Qt/PySide6
-  source. WebEngine also includes Chromium third-party components with their
-  own notices.
+- License: LGPL-3.0-only **or** GPL-2.0-only **or** GPL-3.0-only
+- Notes: Yogi uses PySide6 / shiboken6 under **LGPL-3.0**. Modules in use:
+  QtCore, QtGui, QtWidgets, QtSvg, QtWebEngine.
+  LGPL obligations when distributing binaries: ship the LGPL-3.0 text, keep
+  Qt/PySide6/shiboken6 as separate replaceable shared libraries (no static
+  linking into Yogi), do not forbid reverse engineering for debugging those
+  libraries, and point to the Qt/PySide6 source offer.
+  WebEngine also includes Chromium third-party components with their own notices.
 - https://doc.qt.io/qtforpython-6/licenses.html
 
-### PyAV (`av`) + FFmpeg
-- PyAV: BSD-style (see upstream LICENSE)
-- Bundled/linked FFmpeg: often LGPL and/or GPL depending on the build/wheel
-- Verify the exact FFmpeg configuration in your distributed runtime.
+### Not used: PyAV (`av`) + FFmpeg
+PyPI PyAV wheels typically bundle a GPL build of FFmpeg, so Yogi does **not**
+depend on or ship `av`.
 
-## Permissive / attribution-friendly Python packages
+- Text-to-speech requests raw 24 kHz int16 mono PCM from every provider
+  (Grok, OpenRouter, Fish Audio). No decoder is required.
+- `faster-whisper` is installed with `--no-deps`. Yogi stubs the `av` import
+  before loading it, because Yogi passes numpy arrays and never asks
+  faster-whisper to decode audio files.
+- When freezing with PyInstaller, pass `--exclude-module av` and confirm no
+  `av` package or FFmpeg DLLs appear in the bundle.
 
-| Package | Typical license |
-|---------|-----------------|
-| QtAwesome | MIT (bundled icon fonts have additional terms; see below) |
+## Direct Python dependencies
+
+Install:
+
+```bash
+pip install -r requirements.txt
+pip install --no-deps "faster-whisper>=1.2,<2"
+```
+
+| Package | License (as declared upstream) |
+|---------|--------------------------------|
+| PySide6 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only (Yogi uses LGPL-3.0) |
+| shiboken6 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only (Yogi uses LGPL-3.0) |
+| QtAwesome | MIT (bundled icon fonts: see Fonts & icons) |
 | requests | Apache-2.0 |
-| numpy | BSD |
-| sounddevice | MIT |
+| numpy | BSD-3-Clause (plus permissive notices for bundled pieces) |
+| sounddevice | MIT (uses PortAudio; PortAudio is MIT-style) |
 | mss | MIT |
-| Pillow | HPND / permissive (see upstream) |
+| Pillow | MIT-CMU / HPND-style (see upstream) |
 | keyboard | MIT |
 | websocket-client | Apache-2.0 |
 | faster-whisper | MIT |
-| keyring | MIT / PSF-style |
+| ctranslate2 | MIT |
+| huggingface-hub | Apache-2.0 |
+| tokenizers | Apache-2.0 |
+| onnxruntime | MIT |
+| tqdm | MPL-2.0 AND MIT |
+| keyring | MIT |
 
-Also keep licenses for transitive deps installed with the above
-(e.g. ctranslate2, tokenizers, huggingface_hub) when shipping a bundle.
+## Common transitive packages (also ship attribution when bundling)
+
+| Package | License (as declared upstream) |
+|---------|--------------------------------|
+| certifi | MPL-2.0 |
+| urllib3 | MIT |
+| idna | BSD-3-Clause |
+| charset-normalizer | MIT |
+| cffi | MIT-0 |
+| pycparser | BSD-3-Clause |
+| PyYAML | MIT |
+| filelock | MIT |
+| fsspec | BSD-3-Clause |
+| packaging | Apache-2.0 OR BSD-2-Clause |
+| typing-extensions | PSF-2.0 |
+| hf-xet | Apache-2.0 |
+| jaraco.classes / jaraco.context / jaraco.functools | MIT |
+| more-itertools | MIT |
+
+File-level copyleft notes: **certifi** and parts of **tqdm** use MPL-2.0.
+That requires keeping those files under MPL terms and providing source for
+modifications to those files; it does **not** force Yogi itself onto the GPL.
+
+Re-scan the frozen bundle before each release — transitive sets change with
+versions.
 
 ## Fonts & icons
 
@@ -67,7 +114,7 @@ Also keep licenses for transitive deps installed with the above
 - Code: MIT
 - Keep attribution; do not strip embedded license comments from font/code files.
 
-## Models & online services (not in requirements.txt, but used at runtime)
+## Models & online services (not in requirements.txt)
 
 - Whisper / faster-whisper model weights: follow the license of the specific
   model files you download and redistribute (if any).
@@ -77,8 +124,10 @@ Also keep licenses for transitive deps installed with the above
 ## Distribution checklist
 
 - [x] Yogi `LICENSE.txt` is PolyForm Noncommercial 1.0.0 with Required Notice.
-- [ ] Ship the LGPL-3.0 text and keep Qt/PySide6 libraries replaceable in bundles.
-- [ ] Re-check FFmpeg/PyAV for your distribution story.
+- [x] Core avoids PyQt6, PyAV/FFmpeg, and in-process GPL plugins (blocks are subprocess-only; TTS is PCM-only; STT stubs `av`).
+- [ ] Ship LGPL-3.0 text and keep Qt/PySide6/shiboken6 libraries replaceable in bundles.
+- [ ] Confirm `av` is absent from the bundle (`--exclude-module av`; no FFmpeg DLLs).
 - [ ] Ship Inter `OFL.txt` and do not remove Font Awesome attribution.
 - [ ] Include this notices file (or equivalent) with binary releases.
 - [ ] Do not ship community blocks inside the Yogi core package; they keep their own licenses.
+- [ ] Re-check transitive package licenses after dependency bumps.

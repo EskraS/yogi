@@ -2327,21 +2327,7 @@ class SettingsTab(QWidget):
         )))
         self._add_vocal_speed(page, make_slider_row, "grok_speed", 70, 150)
 
-        codec = self._vocal_combo("grok_codec", [(c, c) for c in vocal.GROK_CODECS])
-        page.addWidget(self._vocal_row("Audio format", codec))
-
         page.addWidget(self._vocal_divider("Advanced"))
-        page.addWidget(self._vocal_row("Sample rate", self._vocal_combo(
-            "grok_sample_rate", [(r, f"{r:,} Hz") for r in vocal.GROK_SAMPLE_RATES]
-        )))
-        bitrate_row = self._vocal_row("Bitrate", self._vocal_combo(
-            "grok_bit_rate", [(b, f"{b // 1000} kbps") for b in vocal.GROK_BIT_RATES]
-        ))
-        page.addWidget(bitrate_row)
-        sync_bitrate = lambda: bitrate_row.setVisible(self.settings["grok_codec"] == "mp3")
-        codec.currentIndexChanged.connect(lambda _i: sync_bitrate())
-        sync_bitrate()
-
         page.addWidget(self._vocal_row("Streaming latency", self._vocal_combo(
             "grok_latency", vocal.GROK_LATENCY
         )))
@@ -2362,9 +2348,6 @@ class SettingsTab(QWidget):
         page.addWidget(self._vocal_row("Model", self._or_model))
         self._or_voice = self._vocal_combo("or_voice", [])
         page.addWidget(self._vocal_row("Voice", self._or_voice))
-        page.addWidget(self._vocal_row("Audio format", self._vocal_combo(
-            "or_format", [(f, f) for f in vocal.OR_FORMATS]
-        )))
         _row, speed = self._add_vocal_speed(page, make_slider_row, "or_speed", 50, 200)
         speed.setToolTip("Sent only when not 1.00; models without speed control reject it")
         page.addWidget(self._vocal_row("Provider routing", self._vocal_combo(
@@ -2396,9 +2379,6 @@ class SettingsTab(QWidget):
             picker, "Voice id from your voices or the Fish Voice Library"
         )))
         self._add_vocal_speed(page, make_slider_row, "fish_speed", 50, 200)
-        page.addWidget(self._vocal_row("Audio format", self._vocal_combo(
-            "fish_format", [(f, f) for f in vocal.FISH_FORMATS]
-        )))
         page.addWidget(self._vocal_row("Streaming", self._vocal_toggle(
             "fish_streaming", "Play audio while it downloads"
         )))

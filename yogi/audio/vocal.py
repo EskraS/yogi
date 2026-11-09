@@ -1,11 +1,12 @@
 """Vocal model providers: Grok (xAI WebSocket), OpenRouter and Fish Audio (HTTP).
 
 Shared by the settings card (option lists, model and voice discovery) and
-yogi.speak_yogi (request building, audio decoding). Whatever format a provider
-returns, it reaches the output device as 24 kHz int16 mono.
+yogi.speak_yogi (request building, audio playback). Every provider is asked
+for 24 kHz int16 mono PCM, which goes straight to the output device. Compressed
+formats are not offered: decoding them would need FFmpeg (PyAV), whose wheels
+ship GPL builds.
 """
 
-import io
 import queue
 import re
 import threading
@@ -28,22 +29,17 @@ DEFAULTS = {
     "grok_voice": "wgarphwblupt",
     "grok_language": "en",
     "grok_speed": 1.0,
-    "grok_codec": "pcm",
-    "grok_sample_rate": 24000,
-    "grok_bit_rate": 128000,
     "grok_latency": 1,
     "grok_text_normalization": False,
     "grok_timestamps": False,
     "or_model": "",
     "or_voice": "",
-    "or_format": "pcm",
     "or_speed": 1.0,
     "or_data_policy": "default",
     "or_style": "",
     "or_style_degree": 1.0,
     "fish_model": "s2.1-pro",
     "fish_voice": "",
-    "fish_format": "pcm",
     "fish_streaming": True,
     "fish_tags": "",
     "fish_speed": 1.0,
@@ -63,11 +59,7 @@ GROK_LANGUAGES = [
     ("es-MX", "Spanish (Mexico)"), ("es-ES", "Spanish (Spain)"), ("tr", "Turkish"),
     ("vi", "Vietnamese"),
 ]
-GROK_CODECS = ["pcm", "mp3", "wav", "mulaw", "alaw"]
-GROK_SAMPLE_RATES = [8000, 16000, 22050, 24000, 44100, 48000]
-GROK_BIT_RATES = [32000, 64000, 96000, 128000, 192000]
 GROK_LATENCY = [(0, "0 — best quality"), (1, "1 — faster first audio"), (2, "2 — fastest first audio")]
-OR_FORMATS = ["pcm", "mp3"]
 OR_DATA_POLICIES = [
     ("default", "Default routing"),
     ("zdr", "Zero data retention only"),
@@ -84,7 +76,6 @@ OR_STYLES = [
     "agent", "audiobook", "customer_call_center", "educational", "narrator", "neutral",
 ]
 FISH_MODELS = ["s2.1-pro", "s2.1-pro-free", "s2-pro", "s1", "drama-3"]
-FISH_FORMATS = ["pcm", "mp3", "wav", "opus"]
 
 XAI_VOICES_URL = "https://api.x.ai/v1/tts/voices"
 XAI_CUSTOM_VOICES_URL = "https://api.x.ai/v1/custom-voices"
@@ -103,15 +94,13 @@ def grok_ws_params(s):
     params = {
         "voice": s["grok_voice"],
         "language": s["grok_language"],
-        "codec": s["grok_codec"],
-        "sample_rate": s["grok_sample_rate"],
+        "codec": "pcm",
+        "sample_rate": PLAYBACK_RATE,
         "speed": s["grok_speed"],
         "optimize_streaming_latency": s["grok_latency"],
         "text_normalization": "true" if s["grok_text_normalization"] else "false",
         "with_timestamps": "true" if s["grok_timestamps"] else "false",
     }
-    if s["grok_codec"] == "mp3":
-        params["bit_rate"] = s["grok_bit_rate"]
     return params
 
 
@@ -212,7 +201,8 @@ def fetch_openrouter_speech_models():
 
 def openrouter_request(s, key, text):
     """(url, headers, body) for one OpenRouter speech request."""
-    body = {"model": s["or_model"], "input": text, "response_format": s["or_format"]}
+    # OpenRouter's pcm is 24 kHz mono.
+    body = {"model": s["or_model"], "input": text, "response_format": "pcm"}
     if s["or_voice"]:
         body["voice"] = s["or_voice"]
     # Models without speed control reject any non-default value with a 400.
@@ -231,11 +221,6 @@ def openrouter_request(s, key, text):
     if provider:
         body["provider"] = provider
     return OPENROUTER_SPEECH_URL, {"Authorization": f"Bearer {key}"}, body
-
-
-def openrouter_audio_format(s):
-    """(format, sample rate) of OpenRouter's response. Its pcm is 24 kHz mono."""
-    return s["or_format"], PLAYBACK_RATE
 
 
 # ── Fish Audio ───────────────────────────────────────────────────────────────
@@ -380,7 +365,8 @@ def fish_request(s, key, text):
     direction = fish_direction(s)
     body = {
         "text": f"{direction} {text}" if direction else text,
-        "format": s["fish_format"],
+        "format": "pcm",
+        "sample_rate": PLAYBACK_RATE,
         "temperature": round(s["fish_temperature"], 2),
         "top_p": round(s["fish_top_p"], 2),
     }
@@ -389,14 +375,8 @@ def fish_request(s, key, text):
         body["reference_id"] = voice
     if abs(s["fish_speed"] - 1.0) > 1e-3:
         body["prosody"] = {"speed": round(s["fish_speed"], 2)}
-    if s["fish_format"] in ("pcm", "wav"):
-        body["sample_rate"] = PLAYBACK_RATE
     headers = {"Authorization": f"Bearer {key}", "model": s["fish_model"]}
     return FISH_TTS_URL, headers, body
-
-
-def fish_audio_format(s):
-    return s["fish_format"], PLAYBACK_RATE
 
 
 # ── Text → requests ──────────────────────────────────────────────────────────
@@ -427,7 +407,7 @@ def iter_sentences(chunks, min_chars=80):
         yield buf.strip()
 
 
-def speak_http(pieces, build_request, audio_format, write, session, stream=True, lookahead=2,
+def speak_http(pieces, build_request, write, session, stream=True, lookahead=2,
                should_stop=lambda: False):
     """One request per text piece, played in order.
 
@@ -435,7 +415,6 @@ def speak_http(pieces, build_request, audio_format, write, session, stream=True,
     no handshake gap between sentences. Returns once everything has played,
     or soon after should_stop() turns true.
     """
-    fmt, rate = audio_format
     slots = threading.Semaphore(lookahead)
     order = queue.Queue()
 
@@ -471,7 +450,7 @@ def speak_http(pieces, build_request, audio_format, write, session, stream=True,
 
     threading.Thread(target=produce, daemon=True).start()
     while not should_stop() and (out := order.get()) is not None:
-        sink = PcmSink(write, fmt, rate)
+        sink = PcmSink(write)
         while not should_stop() and (data := out.get()) is not None:
             sink.feed(data)
         sink.close()
@@ -482,56 +461,17 @@ def speak_http(pieces, build_request, audio_format, write, session, stream=True,
             slots.release()
 
 
-# ── Audio decoding ───────────────────────────────────────────────────────────
-
-# PyAV demuxer per provider format; opus arrives in a container, so it is probed.
-_AV_FORMATS = {"pcm": "s16le", "mp3": "mp3", "wav": "wav", "mulaw": "mulaw",
-               "alaw": "alaw", "opus": None}
-_RAW_FORMATS = {"pcm", "mulaw", "alaw"}
-
-
-class _QueueReader(io.RawIOBase):
-    """Blocking file object over a queue of byte chunks; None ends the stream."""
-
-    def __init__(self, chunks):
-        self._chunks = chunks
-        self._buf = b""
-        self._eof = False
-
-    def readable(self):
-        return True
-
-    def readinto(self, b):
-        while not self._buf and not self._eof:
-            chunk = self._chunks.get()
-            if chunk is None:
-                self._eof = True
-            else:
-                self._buf = chunk
-        n = min(len(b), len(self._buf))
-        b[:n] = self._buf[:n]
-        self._buf = self._buf[n:]
-        return n
-
+# ── Audio playback ───────────────────────────────────────────────────────────
 
 class PcmSink:
-    """Takes provider audio bytes in any supported format and calls write()
-    with 24 kHz int16 mono PCM. 24 kHz pcm passes straight through."""
+    """Passes 24 kHz int16 mono PCM bytes to write() in whole samples."""
 
-    def __init__(self, write, fmt="pcm", rate=PLAYBACK_RATE):
+    def __init__(self, write):
         self._write = write
-        self._direct = fmt == "pcm" and rate == PLAYBACK_RATE
         self._carry = b""
-        if not self._direct:
-            self._chunks = queue.Queue()
-            self._thread = threading.Thread(target=self._decode, args=(fmt, rate), daemon=True)
-            self._thread.start()
 
     def feed(self, data):
         if not data:
-            return
-        if not self._direct:
-            self._chunks.put(data)
             return
         # HTTP chunks can split a sample; hold the odd byte for the next chunk.
         data = self._carry + data
@@ -540,29 +480,5 @@ class PcmSink:
         if cut:
             self._write(data[:cut])
 
-    def close(self, timeout=180):
-        if not self._direct:
-            self._chunks.put(None)
-            self._thread.join(timeout)
-
-    def _decode(self, fmt, rate):
-        import av
-
-        options = {"probesize": "32768", "analyzeduration": "0"}
-        if fmt in _RAW_FORMATS:
-            options.update(sample_rate=str(rate), ch_layout="mono")
-        reader = _QueueReader(self._chunks)
-        try:
-            with av.open(reader, mode="r", format=_AV_FORMATS.get(fmt), options=options) as container:
-                resampler = av.AudioResampler(format="s16", layout="mono", rate=PLAYBACK_RATE)
-                for frame in container.decode(audio=0):
-                    for out in resampler.resample(frame):
-                        self._write(out.to_ndarray().tobytes())
-                for out in resampler.resample(None):
-                    self._write(out.to_ndarray().tobytes())
-        except Exception as e:
-            print(f"tts: could not decode {fmt} audio: {e}", flush=True)
-        finally:
-            # Drain so a failed decode never leaves the feeder blocked on a full stream.
-            while reader.read(65536):
-                pass
+    def close(self):
+        pass

@@ -5,8 +5,10 @@ hotkey again, a pause in speech longer than SILENCE_HANG_S, or the hard cap
 at MAX_RECORD_S.
 """
 
+import sys
 import threading
 import time
+import types
 from collections import namedtuple
 
 import numpy as np
@@ -58,6 +60,22 @@ def prewarm_stt():
     threading.Thread(target=_ensure_model, daemon=True).start()
 
 
+def _av_stub():
+    """Stand-in for PyAV whose attributes raise an error that says why."""
+    stub = types.ModuleType("av")
+
+    def __getattr__(name):
+        # Dunder probes (hasattr(m, "__file__"), inspect, freezers) must stay plain misses.
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise AttributeError(
+            f"av.{name}: av is intentionally not installed; Yogi passes numpy arrays"
+        )
+
+    stub.__getattr__ = __getattr__
+    return stub
+
+
 def _ensure_model():
     global _model, _loading
     with _model_lock:
@@ -65,6 +83,9 @@ def _ensure_model():
             return
         _loading = True
     try:
+        # faster-whisper imports PyAV (GPL FFmpeg) only for decoding audio files.
+        # Yogi passes numpy arrays, so a stub keeps FFmpeg out of the process.
+        sys.modules.setdefault("av", _av_stub())
         from faster_whisper import WhisperModel
 
         t0 = time.perf_counter()

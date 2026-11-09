@@ -739,12 +739,10 @@ def _speak_http(text_chunks, settings, provider, key):
             print("tts: pick an OpenRouter speech model in Settings > Vocal Model", flush=True)
             return
         build = lambda text: vocal.openrouter_request(settings, key, text)
-        audio_format = vocal.openrouter_audio_format(settings)
         stream_response = True
     else:
         vocal.resolve_fish_voice(settings, key)
         build = lambda text: vocal.fish_request(settings, key, text)
-        audio_format = vocal.fish_audio_format(settings)
         stream_response = settings["fish_streaming"]
 
     stream, stream_is_shared = _audio_prewarm.acquire()
@@ -764,7 +762,7 @@ def _speak_http(text_chunks, settings, provider, key):
         _emit_tts_levels(pcm)
 
     try:
-        vocal.speak_http(vocal.iter_sentences(text_chunks), build, audio_format, write,
+        vocal.speak_http(vocal.iter_sentences(text_chunks), build, write,
                          _http_prewarm.session(), stream=stream_response,
                          should_stop=_stop_speaking.is_set)
     finally:
@@ -811,7 +809,7 @@ def _speak_grok(text_chunks, settings, key):
         stream.write(pcm)
         _emit_tts_levels(pcm)
 
-    sink = vocal.PcmSink(write, settings["grok_codec"], settings["grok_sample_rate"])
+    sink = vocal.PcmSink(write)
     first_audio_delta_printed = False
     def receive_audio():
         try:
