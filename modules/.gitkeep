@@ -1,0 +1,2 @@
+# Git does not track empty folders. This file keeps modules/ in the repo.
+# Installed blocks live in this folder. This file is not a block.

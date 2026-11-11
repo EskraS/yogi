@@ -13,9 +13,6 @@ Thumbs.db
 debug-*.log
 orb-frame-*.png
 
-# Community blocks (separate repos / local installs; may include GPL helpers)
-modules/
-
 # Editor / AI tooling
 .cursor/
 .opencode/
