@@ -15,7 +15,7 @@ from yogi.paths import ROOT
 DEFAULT_MODULES_ROOT = ROOT / "modules"
 
 # Id is the zip file stem, lowercased. First char a letter, then up to 31 more.
-MODULE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+MODULE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 # Caps are a zip-bomb brake. Declared size is checked first, then bytes actually written.
 MAX_INSTALL_BYTES = 500 * 1024 * 1024
@@ -24,9 +24,6 @@ _TOO_LARGE = f"Zip is too large to install (max {MAX_INSTALL_BYTES // (1024 * 10
 
 # Mac "Compress" adds these next to the real folder. They are not the module.
 _NOISE_TOP_NAMES = {"__MACOSX", ".DS_Store"}
-
-# Ours, not the author's. Missing file means the module is on.
-ENABLED_FILE = "enabled.json"
 
 
 def validate_manifest(data):
@@ -51,6 +48,8 @@ def validate_manifest(data):
         return '"name" must be 1 to 40 characters'
     if len(description) > 200:
         return '"description" must be at most 200 characters'
+    if "enabled" in data and not isinstance(data["enabled"], bool):
+        return '"enabled" must be true or false'
 
     return None
 
@@ -81,7 +80,7 @@ def scan_modules(root=None):
             "name": "",
             "description": "",
             "error": None,
-            "enabled": _read_enabled(folder),
+            "enabled": True,
             "followup_refresh": False,
         }
         path = folder / "manifest.json"
@@ -109,6 +108,7 @@ def scan_modules(root=None):
             if isinstance(data.get("description"), str):
                 entry["description"] = data["description"]
             entry["followup_refresh"] = data.get("followup_refresh") is True
+            entry["enabled"] = data.get("enabled") is not False
 
         entry["error"] = validate_manifest(data)
         results.append(entry)
@@ -267,20 +267,6 @@ def _read_manifest(zf, info):
     return data, None
 
 
-def _read_enabled(folder):
-    """True unless enabled.json exists and sets enabled to false."""
-    path = folder / ENABLED_FILE
-    if not path.is_file():
-        return True
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return True
-    if isinstance(data, dict) and isinstance(data.get("enabled"), bool):
-        return data["enabled"]
-    return True
-
-
 def _module_dir(module_id, root=None):
     """Return (folder, error). Folder is a real child of modules/, never a traversal."""
     if not isinstance(module_id, str) or not module_id:
@@ -315,18 +301,22 @@ def uninstall_module(module_id, root=None):
 
 
 def set_module_enabled(module_id, enabled, root=None):
-    """Write enabled.json inside the module folder. Returns None or an error string."""
+    """Set "enabled" in the block's manifest.json. Returns None or an error string."""
     dest, error = _module_dir(module_id, root)
     if error:
         return error
     if dest.is_symlink() or not dest.is_dir():
         return f'No block named "{module_id}" is installed.'
-    path = dest / ENABLED_FILE
+    path = dest / "manifest.json"
     try:
-        path.write_text(
-            json.dumps({"enabled": bool(enabled)}) + "\n",
-            encoding="utf-8",
-        )
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "Could not update block: manifest.json is missing or not valid JSON"
+    if not isinstance(data, dict):
+        return "Could not update block: manifest.json must be a JSON object"
+    data["enabled"] = bool(enabled)
+    try:
+        path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
     except OSError as exc:
         return f"Could not update block: {exc}"
     return None
@@ -366,9 +356,6 @@ def _extract_zip(zf, entries, prefix, staging):
             continue
         inner = rel[len(prefix):]
         if not inner or inner.endswith("/"):
-            continue
-        # enabled.json is ours. A zip must not set the switch.
-        if Path(inner).name.lower() == ENABLED_FILE:
             continue
         target = (root / inner).resolve()
         if not _under_root(target, root):
@@ -434,7 +421,7 @@ def install_module(zip_path, root=None):
             if MODULE_ID_RE.fullmatch(module_id) is None:
                 return (
                     f'Zip file name "{zip_path.stem}" is not a valid block id. '
-                    "Use 1 to 32 characters: start with a letter, then letters, digits, or underscores."
+                    "Use 1 to 32 characters: start with a letter, then letters, digits, underscores, or hyphens."
                 )
 
             dest = root_path / module_id
