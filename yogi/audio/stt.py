@@ -15,12 +15,12 @@ import numpy as np
 import sounddevice as sd
 
 from yogi.audio import voice_levels
+from yogi.core import errors
 from yogi.audio.devices import (
     get_input_device,
     get_speech_threshold,
     input_device_name,
     list_input_devices,
-    set_input_device,
 )
 
 SAMPLE_RATE = 16000
@@ -45,6 +45,11 @@ SttResult = namedtuple("SttResult", "text status")
 _model = None
 _model_lock = threading.Lock()
 _loading = False
+# Set whenever no load is running, so a question asked during startup waits for it.
+_load_done = threading.Event()
+_load_done.set()
+# First run downloads ~500 MB, so this is generous.
+MODEL_WAIT_S = 600
 
 # Set while a recording has heard speech, so the hotkey can tell "I'm done
 # talking" apart from "take a new screenshot".
@@ -82,6 +87,7 @@ def _ensure_model():
         if _model is not None or _loading:
             return
         _loading = True
+        _load_done.clear()
     try:
         # faster-whisper imports PyAV (GPL FFmpeg) only for decoding audio files.
         # Yogi passes numpy arrays, so a stub keeps FFmpeg out of the process.
@@ -96,10 +102,15 @@ def _ensure_model():
         with _model_lock:
             _model = model
     except Exception as e:
-        print(f"stt: model load failed: {e}", flush=True)
+        errors.report(
+            f"Speech recognition (Whisper {MODEL_SIZE}) failed to load. The first run needs "
+            "internet to download it (about 500 MB).",
+            detail=e,
+        )
     finally:
         with _model_lock:
             _loading = False
+            _load_done.set()
 
 
 class _LevelTracker:
@@ -202,6 +213,8 @@ def _record_audio(stop_event, cancel_event, no_speech_timeout):
                         f"(peak level {peak:.4f})",
                         flush=True,
                     )
+                    if peak == 0.0:
+                        _report_dead_mic()
                     return None, "no_speech"
 
                 if time.perf_counter() >= next_meter:
@@ -227,9 +240,18 @@ def _record_audio(stop_event, cancel_event, no_speech_timeout):
     if not started:
         print(f"stt: only silence captured (peak level {peak:.4f})", flush=True)
         _print_device_help()
+        if peak == 0.0:
+            _report_dead_mic()
         return None, "no_speech"
 
     return audio, "ok"
+
+
+def _report_dead_mic():
+    errors.report(
+        f"The microphone ({input_device_name()}) is sending no sound at all. It may be muted, "
+        "blocked in Windows privacy settings, or the wrong input device."
+    )
 
 
 def _print_device_help():
@@ -252,20 +274,27 @@ def _normalize(audio: np.ndarray) -> np.ndarray:
 
 def _transcribe(audio: np.ndarray) -> str:
     _ensure_model()
+    if not _load_done.is_set():
+        print("stt: waiting for the whisper model to finish loading...", flush=True)
+        _load_done.wait(timeout=MODEL_WAIT_S)
     with _model_lock:
         model = _model
     if model is None:
-        print("stt: model not loaded", flush=True)
+        errors.report("Speech recognition isn't loaded, so your question couldn't be heard.")
         return ""
 
     t0 = time.perf_counter()
-    segments, _info = model.transcribe(
-        _normalize(audio),
-        language="en",
-        vad_filter=True,
-        condition_on_previous_text=False,
-    )
-    text = " ".join(segment.text.strip() for segment in segments).strip()
+    try:
+        segments, _info = model.transcribe(
+            _normalize(audio),
+            language="en",
+            vad_filter=True,
+            condition_on_previous_text=False,
+        )
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+    except Exception as e:
+        errors.report("Speech recognition failed on that recording. Try again.", detail=e)
+        return ""
     ms = int((time.perf_counter() - t0) * 1000)
     print(f"stt: transcribed in {ms}ms", flush=True)
     return text

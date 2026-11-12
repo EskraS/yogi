@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
+from yogi.core import errors
 from yogi.ui.settings import theme_palette
 
 # Stuck print loops must not grow without bound.
@@ -126,11 +127,18 @@ class _StreamTee:
 
 def _excepthook(exc_type, exc, tb):
     sys.stderr.write("".join(traceback.format_exception(exc_type, exc, tb)))
+    errors.report(f"Unexpected error: {exc_type.__name__}: {exc}. Details are in the terminal (F2).")
 
 
 def _thread_excepthook(args):
+    if args.exc_type is SystemExit:
+        return
     sys.stderr.write(
         "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    )
+    errors.report(
+        f"Unexpected error: {args.exc_type.__name__}: {args.exc_value}. "
+        "Details are in the terminal (F2)."
     )
 
 

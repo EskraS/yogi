@@ -52,10 +52,6 @@ def get_key(provider_id):
         raise KeyStoreError(_STORAGE_ERROR) from None
 
 
-def has_key(provider_id):
-    return get_key(provider_id) is not None
-
-
 def set_key(provider_id, key):
     _check_provider(provider_id)
     key = (key or "").strip()

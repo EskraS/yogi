@@ -20,7 +20,7 @@ from yogi.audio.stt import (
     prewarm_stt,
     speech_in_progress,
 )
-from yogi.core import history_store, key_store, module_loader
+from yogi.core import errors, history_store, key_store, module_loader
 
 test_settings = {
     "model": "google/gemini-3.6-flash",
@@ -174,9 +174,15 @@ def _iter_stream_deltas(response, t_ms):
             stream_done_printed = True
             print(f"\nT+{t_ms()}ms stream_done", flush=True)
             break
-        chunk = json.loads(data)
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            print(f"\nllm: skipped unreadable stream line: {data[:200]}", flush=True)
+            continue
         if "error" in chunk:
-            print("\nLLM STREAM ERROR:", chunk["error"])
+            err = chunk["error"]
+            message = err.get("message") if isinstance(err, dict) else err
+            errors.report(f"The visual model stopped with an error: {message}")
             break
         choices = chunk.get("choices")
         if not choices:
@@ -230,7 +236,12 @@ def _grok_ws_target(settings):
     return (vocal.grok_ws_params(settings), key) if key else None
 
 
+# Last handshake failure, for the message shown when a reply can't connect.
+_tts_last_error = None
+
+
 def _tts_connect(params, key):
+    global _tts_last_error
     t0 = time.perf_counter()
 
     def t_ms():
@@ -238,14 +249,31 @@ def _tts_connect(params, key):
 
     url = "wss://api.x.ai/v1/tts?" + urlencode(params)
     try:
-        ws = websocket.create_connection(url, header=[f"Authorization: Bearer {key}"])
+        ws = websocket.create_connection(
+            url, header=[f"Authorization: Bearer {key}"], timeout=15
+        )
+        ws.settimeout(None)
         # The socket's voice/format are fixed at handshake; acquire() compares these.
         ws.yogi_params = params
         print(f"tts: ws_handshake_done in {t_ms()}ms", flush=True)
+        _tts_last_error = None
         return ws
     except Exception as e:
         print(f"tts: ws_handshake_failed after {t_ms()}ms: {e}", flush=True)
+        _tts_last_error = e
         return None
+
+
+def _grok_connect_message():
+    status = getattr(_tts_last_error, "status_code", None)
+    if status in (400, 401, 403):
+        return (
+            f"The Grok voice refused to connect (HTTP {status}). Check the xAI key "
+            "and the voice id in Settings > Vocal Model."
+        )
+    if status:
+        return errors.http_reason(status, "xAI (Grok voice)")
+    return "Couldn't connect to the Grok voice. Check your internet connection."
 
 
 class _TtsPrewarm:
@@ -630,11 +658,14 @@ REGION_PADDING_PX = 12
 REGION_PADDING_RATIO = 0.08
 
 _region_select_handler = None
+_region_cancel_handler = None
 
 
-def set_region_select_handler(handler):
-    global _region_select_handler
+def set_region_select_handler(handler, cancel=None):
+    """handler() returns the selected image or None. cancel() closes an open selection."""
+    global _region_select_handler, _region_cancel_handler
     _region_select_handler = handler
+    _region_cancel_handler = cancel
 
 
 _orb_handler = None
@@ -696,7 +727,10 @@ def ask_yogi(encoded_image, question, settings, history=(), module_text=""):
         return int((time.perf_counter() - t0) * 1000)
 
     if not settings.get("api_key"):
-        print("No OpenRouter API key saved. Add one in Settings.", flush=True)
+        errors.report("No OpenRouter API key saved. Add one in Settings > Visual Model.")
+        return
+    if not settings.get("model"):
+        errors.report("No visual model selected. Pick one in Settings > Visual Model.")
         return
 
     url, headers, body = _llm_request(
@@ -704,16 +738,38 @@ def ask_yogi(encoded_image, question, settings, history=(), module_text=""):
     )
 
     print(f"T+{t_ms()}ms requesting llm...", flush=True)
-    response = _http_prewarm.session().post(
-        url,
-        headers=headers, json=body, stream=True, timeout=(10, 180),
-    )
+    try:
+        response = _http_prewarm.session().post(
+            url,
+            headers=headers, json=body, stream=True, timeout=(10, 180),
+        )
+    except requests.Timeout:
+        errors.report("OpenRouter didn't answer in time. Check your connection and try again.")
+        return
+    except requests.RequestException as e:
+        errors.report("Couldn't reach OpenRouter. Check your internet connection.", detail=e)
+        return
     print(f"T+{t_ms()}ms http_response_ready", flush=True)
     if response.status_code != 200:
-        print("LLM ERROR:", response.status_code, response.text)
+        errors.report(
+            errors.http_reason(response.status_code, "OpenRouter"),
+            detail=errors.api_error_text(response),
+        )
         return
 
-    yield from _iter_stream_deltas(response, t_ms)
+    yielded = False
+    try:
+        for delta in _iter_stream_deltas(response, t_ms):
+            yielded = True
+            yield delta
+    except requests.RequestException as e:
+        errors.report("Connection to OpenRouter dropped in the middle of the reply.", detail=e)
+        return
+    if not yielded and not _stop_speaking.is_set():
+        errors.report(
+            f"{settings['model']} sent an empty reply. Try again, raise Max Tokens, "
+            "or pick another model."
+        )
 
 
 def speak_yogi(text_chunks, settings):
@@ -722,8 +778,9 @@ def speak_yogi(text_chunks, settings):
         provider = vocal.GROK
     key = _vocal_key(provider)
     if not key:
-        print(f"tts: no {vocal.PROVIDER_LABELS[provider]} API key - add it in Settings > Vocal Model",
-              flush=True)
+        errors.report(
+            f"No {vocal.PROVIDER_LABELS[provider]} API key saved. Add it in Settings > Vocal Model."
+        )
         return
     if provider == vocal.GROK:
         _speak_grok(text_chunks, settings, key)
@@ -731,40 +788,82 @@ def speak_yogi(text_chunks, settings):
         _speak_http(text_chunks, settings, provider, key)
 
 
+_NO_OUTPUT_DEVICE = (
+    "Couldn't open the audio output device. Check Settings > Output device "
+    "and that your speakers or headphones are connected."
+)
+
+
+def _start_output():
+    """(stream, is_shared) ready to play, or (None, False) after reporting why."""
+    stream, stream_is_shared = _audio_prewarm.acquire()
+    if stream is None:
+        errors.report(_NO_OUTPUT_DEVICE)
+        return None, False
+    try:
+        stream.start()
+    except Exception as e:
+        errors.report(_NO_OUTPUT_DEVICE, detail=e)
+        _audio_prewarm.release(stream, stream_is_shared)
+        return None, False
+    return stream, stream_is_shared
+
+
+def _output_writer(stream, on_first=None):
+    """write(pcm) for TTS audio. A device failure is reported once and mutes the rest."""
+    state = {"first": True, "failed": False}
+
+    def write(pcm):
+        if _stop_speaking.is_set() or state["failed"]:
+            return
+        if state["first"]:
+            state["first"] = False
+            if on_first is not None:
+                on_first()
+        try:
+            stream.write(pcm)
+        except Exception as e:
+            state["failed"] = True
+            errors.report(
+                "Audio output stopped working. Check that the output device is still connected.",
+                detail=e,
+            )
+            return
+        _emit_tts_levels(pcm)
+
+    return write
+
+
 def _speak_http(text_chunks, settings, provider, key):
     """OpenRouter and Fish Audio take whole text per request, so speak sentence by sentence."""
     t0 = time.perf_counter()
     if provider == vocal.OPENROUTER:
         if not settings["or_model"]:
-            print("tts: pick an OpenRouter speech model in Settings > Vocal Model", flush=True)
+            errors.report("No OpenRouter speech model selected. Pick one in Settings > Vocal Model.")
             return
         build = lambda text: vocal.openrouter_request(settings, key, text)
         stream_response = True
+        service = "OpenRouter (voice)"
     else:
         vocal.resolve_fish_voice(settings, key)
         build = lambda text: vocal.fish_request(settings, key, text)
         stream_response = settings["fish_streaming"]
+        service = "Fish Audio"
 
-    stream, stream_is_shared = _audio_prewarm.acquire()
+    stream, stream_is_shared = _start_output()
     if stream is None:
-        print("tts: no audio device available", flush=True)
         return
-    stream.start()
-    first_audio = []
 
-    def write(pcm):
-        if _stop_speaking.is_set():
-            return
-        if not first_audio:
-            first_audio.append(True)
-            print(f"tts: T+{int((time.perf_counter() - t0) * 1000)}ms first_audio", flush=True)
-        stream.write(pcm)
-        _emit_tts_levels(pcm)
-
+    write = _output_writer(
+        stream,
+        on_first=lambda: print(
+            f"tts: T+{int((time.perf_counter() - t0) * 1000)}ms first_audio", flush=True
+        ),
+    )
     try:
         vocal.speak_http(vocal.iter_sentences(text_chunks), build, write,
                          _http_prewarm.session(), stream=stream_response,
-                         should_stop=_stop_speaking.is_set)
+                         should_stop=_stop_speaking.is_set, service=service)
     finally:
         _audio_prewarm.release(stream, stream_is_shared)
 
@@ -785,30 +884,24 @@ def _speak_grok(text_chunks, settings, key):
         print(f"tts: T+{t_ms()}ms cold connecting ws...", flush=True)
         ws = _tts_connect(params, key)
         if ws is None:
+            errors.report(_grok_connect_message(), detail=_tts_last_error)
             return
     print(f"tts: T+{t_ms()}ms tts_ws_ready", flush=True)
 
     audio_done = threading.Event()
-    stream, stream_is_shared = _audio_prewarm.acquire()
+    stream, stream_is_shared = _start_output()
     if stream is None:
-        print("tts: no audio device available", flush=True)
         _tts_close_quietly(ws)
         if acquired_from_manager:
             tts_release_and_rewarm()
         return
-    stream.start()
     print(
         f"tts: T+{t_ms()}ms audio_ready"
         f"{' (prewarmed)' if stream_is_shared else ' (cold)'}",
         flush=True,
     )
 
-    def write(pcm):
-        if _stop_speaking.is_set():
-            return
-        stream.write(pcm)
-        _emit_tts_levels(pcm)
-
+    write = _output_writer(stream)
     sink = vocal.PcmSink(write)
     first_audio_delta_printed = False
     def receive_audio():
@@ -831,19 +924,26 @@ def _speak_grok(text_chunks, settings, key):
                     print(f"tts: T+{t_ms()}ms tts_audio_done", flush=True)
                     break
                 elif msg_type == "error":
-                    print("TTS ERROR:", data.get("message", data))
+                    errors.report(f"Grok voice returned an error: {data.get('message', data)}")
                     break
         except Exception as e:
-            print("TTS receive exception:", e)
+            if not _stop_speaking.is_set() and not closed_here.is_set():
+                errors.report("Lost the connection to the Grok voice mid-reply.", detail=e)
         finally:
             audio_done.set()
+    # Set before this function closes the socket itself, so recv() failing is expected.
+    closed_here = threading.Event()
     threading.Thread(target=receive_audio, daemon=True).start()
 
-    for chunk in text_chunks:
-        ws.send(json.dumps({"type": "text.delta", "delta": chunk}))
-
-    if not _stop_speaking.is_set():
-        ws.send(json.dumps({"type": "text.done"}))
+    try:
+        for chunk in text_chunks:
+            ws.send(json.dumps({"type": "text.delta", "delta": chunk}))
+        if not _stop_speaking.is_set():
+            ws.send(json.dumps({"type": "text.done"}))
+    except Exception as e:
+        closed_here.set()
+        errors.report("Lost the connection to the Grok voice while sending the reply.", detail=e)
+        _tts_close_quietly(ws)
     deadline = time.perf_counter() + 180
     completed = False
     while not _stop_speaking.is_set() and time.perf_counter() < deadline:
@@ -859,7 +959,10 @@ def _speak_grok(text_chunks, settings, key):
         audio_done.wait(timeout=2)
     else:
         print(f"tts: T+{t_ms()}ms tts_wait_timeout", flush=True)
-    sink.close(timeout=2 if _stop_speaking.is_set() else 180)
+        errors.report("The Grok voice took over 3 minutes and was cut off.")
+        closed_here.set()
+        _tts_close_quietly(ws)
+    sink.close()
     _audio_prewarm.release(stream, stream_is_shared)
     _tts_close_quietly(ws)
     if acquired_from_manager:
@@ -914,6 +1017,8 @@ def _cancel_recording_handler():
         print("Stop hotkey pressed - cutting Yogi off", flush=True)
     _stop_speaking.set()
     _cancel_recording.set()
+    if _region_cancel_handler is not None:
+        _region_cancel_handler()
 
 
 def _until_stopped(chunks):
@@ -930,10 +1035,21 @@ def _register_stop_hotkey():
     try:
         keyboard.add_hotkey(key, _cancel_recording_handler)
     except ValueError as e:
-        print(f"Invalid stop hotkey {key!r} ({e}); using {DEFAULT_STOP_HOTKEY}", flush=True)
+        errors.report(
+            f"Stop hotkey {key!r} can't be used. Using {DEFAULT_STOP_HOTKEY} instead. "
+            "Pick another in Settings.",
+            detail=e,
+        )
         key = DEFAULT_STOP_HOTKEY
         keyboard.add_hotkey(key, _cancel_recording_handler)
     return key
+
+
+def _remove_stop_hotkey():
+    try:
+        keyboard.remove_hotkey(_cancel_recording_handler)
+    except KeyError:
+        pass
 
 
 def _collect(chunks, out):
@@ -1021,14 +1137,18 @@ def _clear_screenshot_scan():
 def _capture_screenshot():
     """Region select (or full screen). Returns (image, encoded jpeg b64) or None."""
     t0 = time.perf_counter()
-    if _region_select_handler is not None:
-        image = _region_select_handler()
-        if image is None:
-            print("Screenshot cancelled")
-            return None
-    else:
-        image = take_screenshot()
-    encoded = encode_screenshot(image)
+    try:
+        if _region_select_handler is not None:
+            image = _region_select_handler()
+            if image is None:
+                print("Screenshot cancelled")
+                return None
+        else:
+            image = take_screenshot()
+        encoded = encode_screenshot(image)
+    except Exception as e:
+        errors.report("Couldn't capture the screen. Try again.", detail=e)
+        return None
     ms = int((time.perf_counter() - t0) * 1000)
     kb = len(encoded) * 3 // 4 // 1024
     print(f"Screenshot taken: {ms}ms, {kb}KB")
@@ -1047,9 +1167,13 @@ def run_yogi():
     orb = _orb_handler
     shown = False
     try:
+        # Live before the region overlay opens, so the stop key cancels the selection too.
+        _stop_speaking.clear()
+        stop_key = _register_stop_hotkey()
         _new_screenshot.clear()
         shot = _capture_screenshot()
-        if shot is None:
+        if shot is None or _stop_speaking.is_set():
+            _remove_stop_hotkey()
             return
         image, encoded = shot
 
@@ -1063,8 +1187,6 @@ def run_yogi():
             orb.show()
             shown = True
 
-        _stop_speaking.clear()
-        stop_key = _register_stop_hotkey()
         try:
             history = []
             chat_id = history_store.new_chat_id()
@@ -1114,6 +1236,11 @@ def run_yogi():
                     )
                 finally:
                     _awaiting_followup.clear()
+                if status == "error":
+                    errors.report(
+                        "The microphone couldn't record. Check Settings > Input device "
+                        "and that the mic is connected. Device list is in the terminal (F2)."
+                    )
                 if status != "ok":
                     if awaiting_followup and status != "cancelled" and _new_screenshot.is_set():
                         continue
@@ -1153,16 +1280,17 @@ def run_yogi():
                     break
                 print("Tts finished", flush=True)
                 history.append((question, "".join(reply)))
-                history_store.save_chat(chat_id, created, history, shot_jpeg)
+                if history_store.save_chat(chat_id, created, history, shot_jpeg) is None:
+                    errors.report(
+                        f"Couldn't save this chat to history in {history_store.HISTORY_DIR}. "
+                        "Check free disk space and folder permissions."
+                    )
                 no_speech_timeout = float(settings.get("followup_window_s", FOLLOWUP_WINDOW_S))
                 awaiting_followup = True
                 # A hotkey press during the reply must not count as a screenshot request.
                 _new_screenshot.clear()
         finally:
-            try:
-                keyboard.remove_hotkey(_cancel_recording_handler)
-            except KeyError:
-                pass
+            _remove_stop_hotkey()
     finally:
         _clear_screenshot_scan()
         if shown:
@@ -1183,7 +1311,11 @@ def listen_for_hotkey(stop_event, hotkey=DEFAULT_HOTKEY):
             _activation_hotkey, _on_activation_hotkey, suppress=suppress
         )
     except ValueError as e:
-        print(f"Invalid hotkey {_activation_hotkey!r} ({e}); using {DEFAULT_HOTKEY}")
+        errors.report(
+            f"Activation hotkey {_activation_hotkey!r} can't be used. Using {DEFAULT_HOTKEY} "
+            "instead. Pick another in Settings.",
+            detail=e,
+        )
         _activation_hotkey = DEFAULT_HOTKEY
         keyboard.add_hotkey(_activation_hotkey, _on_activation_hotkey, suppress=True)
 

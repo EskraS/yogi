@@ -210,9 +210,6 @@ class RecordButton(QWidget):
             self.anim.start()
         self.update()
 
-    def isRecording(self):
-        return self._recording
-
     def setText(self, text):
         self._text = text
         self.update()
@@ -299,12 +296,6 @@ class CheckButton(RecordButton):
         width = self.fontMetrics().horizontalAdvance(text) + 28
         self.setFixedWidth(max(width, 32))
         self.clicked.connect(self._flip)
-
-    def isCheckable(self):
-        return True
-
-    def isChecked(self):
-        return self._checked
 
     def setChecked(self, on: bool):
         on = bool(on)
@@ -620,9 +611,6 @@ class EyeToggleButton(QWidget):
     def setRevealed(self, revealed: bool):
         self._revealed = bool(revealed)
         self.update()
-
-    def isRevealed(self):
-        return self._revealed
 
     def set_theme(self, theme: str):
         self._theme = theme if theme in _BTN_TOKENS else "dark"
@@ -1411,7 +1399,6 @@ def _check_openrouter_model_up(key: str, model: str):
 
 
 class SettingsTab(QWidget):
-    settings_changed = Signal(dict)
     theme_changed = Signal(str)
     # check id, vision model ids (None on failure), error message
     _openrouter_checked = Signal(int, object, str)
@@ -1694,7 +1681,6 @@ class SettingsTab(QWidget):
         model_section, model_card = self.make_section("Visual Model & Parameters", "mdi.tune")
 
         self.api_key_row = ApiKeyRow(key_store.PROVIDERS[0])
-        self.api_key_hint_label = self.api_key_row.hint_label
         self.api_key_row.input.setStyleSheet(
             self._line_edit_style_from_palette(theme_palette("dark"))
         )
@@ -3099,6 +3085,8 @@ class SettingsTab(QWidget):
         self._show_error_banner(message, success=True)
 
     def _show_error_banner(self, message: str, success: bool = False):
+        if not success:
+            print(f"ERROR: Settings: {message}", flush=True)
         self._error_timer.stop()
         if self._error_anim is not None:
             self._error_anim.stop()

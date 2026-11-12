@@ -31,6 +31,7 @@ BOTTOM_OFFSET_FRACTION = 0.04
 # 0 freezes the shape, 2-3 makes swells, dents and wind clearly visible.
 VOICE_INTENSITY = 2.5
 
+from yogi.core import errors
 from yogi.paths import asset
 
 _ORB_HTML = str(asset("orb.html"))
@@ -110,14 +111,28 @@ class OrbWindow(QMainWindow):
 
     def _on_load(self, ok):
         self._loaded = bool(ok)
-        if ok:
-            self._run_js(
-                "window.setVoiceIntensity && window.setVoiceIntensity("
-                f"{_js_number(VOICE_INTENSITY)})"
+        if not ok:
+            errors.report(
+                f"The listening orb ({_ORB_HTML}) failed to load. Yogi still works, "
+                "but you won't see when it is listening."
             )
-        if ok and self._pending_boot:
+            return
+        self._run_js(
+            "window.setVoiceIntensity && window.setVoiceIntensity("
+            f"{_js_number(VOICE_INTENSITY)})"
+        )
+        # The page loads, but its module script dies if three.js can't come from the CDN.
+        self._view.page().runJavaScript("typeof window.bootOrb", 0, self._on_boot_probe)
+        if self._pending_boot:
             self._pending_boot = False
             self._boot()
+
+    def _on_boot_probe(self, kind):
+        if kind != "function":
+            errors.report(
+                "The listening orb couldn't load three.js from the internet. Yogi still works, "
+                "but the orb won't show until you restart Yogi online."
+            )
 
     def _clear_native_border(self):
         """Windows 11 draws a 1px frame around frameless windows. Turn it off."""

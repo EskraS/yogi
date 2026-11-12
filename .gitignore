@@ -6,6 +6,10 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
+# PyInstaller output
+build/
+dist/
+
 # Local / OS
 .DS_Store
 Thumbs.db
@@ -17,10 +21,6 @@ orb-frame-*.png
 .cursor/
 .opencode/
 graphify-out/
-
-# JS prototype leftovers
-yogi-js/node_modules/
-yogi-js/.next/
 
 # Skills
 .claude/

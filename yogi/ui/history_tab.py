@@ -309,7 +309,6 @@ class HistoryTab(QWidget):
         self._theme = "dark"
         self._conversations: list[dict] = []
         self._active_id: str | None = None
-        self._current_conversation: dict | None = None
         self._conv_items: dict[str, ConversationItem] = {}
         self._build()
         self.chat_saved.connect(self._on_chat_saved)
@@ -491,7 +490,6 @@ class HistoryTab(QWidget):
                 item.widget().deleteLater()
 
     def _load_conversation(self, conversation: dict):
-        self._current_conversation = conversation
         self._active_id = conversation["id"]
 
         for cid, ci in self._conv_items.items():
@@ -518,7 +516,6 @@ class HistoryTab(QWidget):
         QTimer.singleShot(0, self._update_bubble_widths)
 
     def _close_conversation(self):
-        self._current_conversation = None
         self._active_id = None
         for ci in self._conv_items.values():
             ci.set_active(False)
