@@ -5,6 +5,7 @@ hotkey again, a pause in speech longer than SILENCE_HANG_S, or the hard cap
 at MAX_RECORD_S.
 """
 
+import os
 import sys
 import threading
 import time
@@ -25,6 +26,13 @@ from yogi.audio.devices import (
 
 SAMPLE_RATE = 16000
 MODEL_SIZE = "small"
+# Real files under LocalAppData — HF hub cache uses Windows symlinks that
+# CTranslate2 often cannot open ("Unable to open file 'model.bin'").
+MODEL_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+    "Yogi",
+    f"whisper-{MODEL_SIZE}",
+)
 MAX_RECORD_S = 180
 
 BLOCK_MS = 50
@@ -89,14 +97,29 @@ def _ensure_model():
         _loading = True
         _load_done.clear()
     try:
+        # Avoid HF hub symlinks; CTranslate2 on Windows fails to open them.
+        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
         # faster-whisper imports PyAV (GPL FFmpeg) only for decoding audio files.
         # Yogi passes numpy arrays, so a stub keeps FFmpeg out of the process.
         sys.modules.setdefault("av", _av_stub())
         from faster_whisper import WhisperModel
+        from huggingface_hub import snapshot_download
 
         t0 = time.perf_counter()
-        print(f"stt: loading whisper {MODEL_SIZE}...", flush=True)
-        model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+        print(f"stt: loading whisper {MODEL_SIZE} into {MODEL_DIR}...", flush=True)
+        # local_dir stores real files (no Windows symlinks for CTranslate2 to trip on).
+        model_path = snapshot_download(
+            f"Systran/faster-whisper-{MODEL_SIZE}",
+            local_dir=MODEL_DIR,
+            allow_patterns=[
+                "config.json",
+                "preprocessor_config.json",
+                "model.bin",
+                "tokenizer.json",
+                "vocabulary.*",
+            ],
+        )
+        model = WhisperModel(model_path, device="cpu", compute_type="int8")
         ms = int((time.perf_counter() - t0) * 1000)
         print(f"stt: model ready in {ms}ms", flush=True)
         with _model_lock:
@@ -104,7 +127,8 @@ def _ensure_model():
     except Exception as e:
         errors.report(
             f"Speech recognition (Whisper {MODEL_SIZE}) failed to load. The first run needs "
-            "internet to download it (about 500 MB).",
+            "internet to download it (about 500 MB). Check your connection and restart Yogi. "
+            "Press F2 for details.",
             detail=e,
         )
     finally:

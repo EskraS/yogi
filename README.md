@@ -95,8 +95,8 @@ Nothing below uses a hard-coded username. `%LOCALAPPDATA%` and `%USERPROFILE%` a
 | Model choice, sliders, prompts, voice options, hotkeys, theme, mic threshold, follow-up time, audio devices | Windows Registry: `HKEY_CURRENT_USER\Software\Yogi\Yogi` | Delete that key. There is no settings folder. |
 | API keys | Windows Credential Manager, not a file | Remove every generic credential named `Yogi` or ending in `@Yogi`. |
 | Chat history (transcript JSON and screenshot JPEG) | `%LOCALAPPDATA%\Yogi\history` | Delete that folder. If `LOCALAPPDATA` is unset, the fallback is `~/Yogi/history`. |
-| Local Whisper download (`small`) | `%USERPROFILE%\.cache\huggingface\hub\models--Systran--faster-whisper-small` | Optional. Delete only that folder. The next listen downloads it again. |
-| Installed blocks, including the enabled flag in each `manifest.json` | `modules/` next to `main.py`, or `<folder that contains Yogi.exe>\_internal\modules` in a frozen build | Delete one block folder to remove that block. A settings reset does not require this. |
+| Local Whisper download (`small`) | `%LOCALAPPDATA%\Yogi\whisper-small` | Delete that folder. The next listen downloads it again (~500 MB). Older builds may also leave `%USERPROFILE%\.cache\huggingface\hub\models--Systran--faster-whisper-small`; that folder is unused by current Yogi and safe to delete. |
+| Installed blocks, including the enabled flag in each `manifest.json` and each block's Python packages in `.yogi-env/` | `modules/` next to `main.py`, or `<folder that contains Yogi.exe>\_internal\modules` in a frozen build | Delete one block folder to remove that block. A settings reset does not require this. |
 
 API key names in Credential Manager (service `Yogi`, one entry per provider):
 
@@ -160,6 +160,8 @@ Blocks are separate programs. Yogi never imports them. Each enabled block runs a
 Contract when Yogi runs the block:
 
 1. Command: `python entry.py <temp.png>` (or `entry.exe <temp.png>`). The image is always a temporary PNG path as `argv[1]`.
+   - Python: the installer ships a private Python 3.13 (`_internal\python`), so users don't need their own. If it's missing, Yogi falls back to `python` on PATH, and shows "Python must be installed" on startup when there is none.
+   - Dependencies: put them in `requirements.txt` next to `manifest.json`. The first time the block is enabled (or on startup), Yogi creates `.yogi-env/` in the block folder and `pip install`s them. This needs internet once and can take a minute; the block is skipped until it finishes. Changing `requirements.txt` triggers a reinstall.
 2. Working directory is the block folder.
 3. Write the result text to **stdout** (UTF-8). Empty stdout means “nothing to add”. Non-empty results from several blocks are joined as `[Block Name]\n…` before they reach the model.
 4. Write logs to **stderr** (Yogi prefixes them with the block id).
@@ -172,4 +174,4 @@ Install:
 - A zip must include `manifest.json` and at least one `.py` (at the zip root or inside one top-level folder).
 - `manifest.json` is the only config file a block needs.
 
-Frozen `Yogi.exe` builds have no Python for `.py` blocks - ship an `.exe` `entry` for installer users.
+Building the installer needs the private Python in `python_runtime/` (unzip the `tools` folder of the NuGet [`python`](https://www.nuget.org/packages/python) package there) before `pyinstaller --noconfirm Yogi.spec`.

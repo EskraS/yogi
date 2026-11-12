@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 
@@ -480,17 +481,145 @@ def _read_entry_name(folder):
     return name
 
 
-def _block_command(entry_path):
-    """Command list for one block entry, or None when it can't run here.
+PYTHON_MISSING = (
+    "Error: Python must be installed to use Yogi Blocks. Reinstall Yogi, or install "
+    "Python 3.10+ from python.org and tick \"Add python.exe to PATH\"."
+)
+# Each .py block with a requirements.txt gets its own venv inside its folder.
+BLOCK_ENV_DIR = ".yogi-env"
+_ENV_STAMP = "requirements.installed"
+BLOCK_ENV_TIMEOUT_S = 900
 
-    .py needs a Python interpreter. In a frozen build sys.executable is
-    Yogi.exe itself, which would launch a second Yogi instead of the block.
+_env_lock = threading.Lock()
+_env_building = set()
+
+
+def base_python():
+    """Interpreter for .py blocks: bundled runtime, else this/system Python. None if absent."""
+    bundled = ROOT / "python" / "python.exe"
+    if bundled.is_file():
+        return bundled
+    # In a frozen build sys.executable is Yogi.exe itself, never a Python.
+    if not getattr(sys, "frozen", False):
+        return Path(sys.executable)
+    found = shutil.which("python")
+    # The WindowsApps python.exe is a Store stub that opens the Store instead of running.
+    if found and "windowsapps" not in found.lower():
+        return Path(found)
+    return None
+
+
+def _clean_env():
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    for name in ("PYTHONHOME", "PYTHONPATH"):
+        env.pop(name, None)
+    return env
+
+
+def _no_window():
+    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+def _env_python(folder):
+    return folder / BLOCK_ENV_DIR / "Scripts" / "python.exe"
+
+
+def _env_ready(folder):
+    """True when the block needs no env, or its env matches requirements.txt."""
+    req = folder / "requirements.txt"
+    if not req.is_file():
+        return True
+    try:
+        stamp = (folder / BLOCK_ENV_DIR / _ENV_STAMP).read_bytes()
+        return _env_python(folder).is_file() and stamp == req.read_bytes()
+    except OSError:
+        return False
+
+
+def _build_env(module_id, folder):
+    try:
+        python = base_python()
+        if python is None:
+            errors.report(PYTHON_MISSING)
+            return
+        env_dir = folder / BLOCK_ENV_DIR
+        req = folder / "requirements.txt"
+        print(f"modules: {module_id}: installing Python packages (first time only)...", flush=True)
+        run = {
+            "capture_output": True, "timeout": BLOCK_ENV_TIMEOUT_S, "env": _clean_env(),
+            "cwd": str(folder), "creationflags": _no_window(), "check": True,
+        }
+        subprocess.run([str(python), "-m", "venv", "--clear", str(env_dir)], **run)
+        subprocess.run(
+            [str(_env_python(folder)), "-m", "pip", "install", "--disable-pip-version-check",
+             "-r", str(req)],
+            **run,
+        )
+        (env_dir / _ENV_STAMP).write_bytes(req.read_bytes())
+        print(f"modules: {module_id}: Python packages ready", flush=True)
+    except subprocess.CalledProcessError as exc:
+        log = (exc.stderr or exc.stdout or b"").decode("utf-8", errors="replace")
+        errors.report(
+            f"Block {module_id} couldn't install its Python packages. Check your internet "
+            "connection, then turn the block off and on again.",
+            detail=log[-300:],
+        )
+    except subprocess.TimeoutExpired:
+        errors.report(f"Block {module_id}: installing its Python packages timed out.")
+    except OSError as exc:
+        errors.report(f"Block {module_id} couldn't set up Python.", detail=exc)
+    finally:
+        with _env_lock:
+            _env_building.discard(module_id)
+
+
+def prepare_block_env(module_id, root=None):
+    """Build the block's venv in the background if it needs one. Returns at once."""
+    folder, error = _module_dir(module_id, root)
+    if error or not folder.is_dir():
+        return
+    entry = _read_entry_name(folder)
+    if not entry or not entry.lower().endswith(".py") or _env_ready(folder):
+        return
+    with _env_lock:
+        if module_id in _env_building:
+            return
+        _env_building.add(module_id)
+    threading.Thread(
+        target=_build_env, args=(module_id, folder), daemon=True, name=f"yogi-env-{module_id}"
+    ).start()
+
+
+def prepare_blocks(root=None):
+    """Report a missing Python and build envs for every installed .py block.
+
+    Disabled blocks too, so turning one on later needs no wait.
     """
+    if base_python() is None:
+        errors.report(PYTHON_MISSING)
+        return
+    for info in scan_modules(root):
+        if not info.get("error"):
+            prepare_block_env(info["id"], root)
+
+
+def _block_command(folder, entry_path, module_id):
+    """(command list, None) for one block entry, or (None, message) when it can't run yet."""
     if entry_path.suffix.lower() == ".exe":
-        return [str(entry_path)]
-    if getattr(sys, "frozen", False):
-        return None
-    return [sys.executable, str(entry_path)]
+        return [str(entry_path)], None
+    python = base_python()
+    if python is None:
+        return None, PYTHON_MISSING
+    if not _env_ready(folder):
+        prepare_block_env(module_id, folder.parent)
+        return None, (
+            f"Block {module_id} is still installing its Python packages (first time only). "
+            "It will join in once that finishes."
+        )
+    if (folder / "requirements.txt").is_file():
+        python = _env_python(folder)
+    return [str(python), str(entry_path)], None
 
 
 def _run_block_process(folder, entry_name, image, module_id):
@@ -505,12 +634,9 @@ def _run_block_process(folder, entry_name, image, module_id):
             f"Block {module_id}: its entry file {entry_name} is missing. Reinstall the block."
         )
         return ""
-    command = _block_command(entry_path)
+    command, problem = _block_command(folder, entry_path, module_id)
     if command is None:
-        errors.report(
-            f"Block {module_id} is a Python script, and Yogi.exe can't run those. "
-            "Use the block's .exe build, or run Yogi from source."
-        )
+        errors.report(problem)
         return ""
 
     png_path = None
@@ -519,19 +645,14 @@ def _run_block_process(folder, entry_name, image, module_id):
             png_path = tmp.name
         image.save(png_path, format="PNG")
 
-        cmd = command + [png_path]
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        kwargs = {
-            "cwd": str(folder.resolve()),
-            "capture_output": True,
-            "timeout": MODULE_RUN_TIMEOUT_S,
-            "env": env,
-        }
-        if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-        completed = subprocess.run(cmd, **kwargs)
+        completed = subprocess.run(
+            command + [png_path],
+            cwd=str(folder.resolve()),
+            capture_output=True,
+            timeout=MODULE_RUN_TIMEOUT_S,
+            env=_clean_env(),
+            creationflags=_no_window(),
+        )
     except subprocess.TimeoutExpired:
         errors.report(
             f"Block {module_id} took longer than {MODULE_RUN_TIMEOUT_S}s and was skipped for this question."

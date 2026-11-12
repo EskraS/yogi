@@ -6,9 +6,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
-# PyInstaller output
+# PyInstaller / Inno Setup output
 build/
 dist/
+installer/
+python_runtime/
+modules/*/.yogi-env/
 
 # Local / OS
 .DS_Store

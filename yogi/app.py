@@ -9,11 +9,11 @@ if sys.platform == "win32":
 from yogi.ui.orb import OrbBridge, OrbWindow  # noqa: E402
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QStackedWidget
-from PySide6.QtCore import Qt, QPoint, QRect, Signal
+from PySide6.QtCore import Qt, QPoint, QRect, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QFont, QIcon, QColor, QMouseEvent
 
 from yogi.paths import asset
-from yogi.core import errors, history_store, preflight
+from yogi.core import errors, history_store, module_loader, preflight
 from yogi.audio import voice_levels
 from yogi.core.assistant import (
     DEFAULT_HOTKEY,
@@ -117,6 +117,8 @@ class YogiApp(QMainWindow):
         set_orb_handler(self.orb_bridge)
         voice_levels.set_level_listener(self.orb_bridge.levels)
         history_store.set_listener(self.history_tab.chat_saved.emit)
+        # After the window is shown, so a "Python missing" popup is visible.
+        QTimer.singleShot(1000, module_loader.prepare_blocks)
 
         self.home_tab.yogi_toggled.connect(self.on_yogi_toggled)
         self.home_tab.start_requested.connect(self.on_start_requested)

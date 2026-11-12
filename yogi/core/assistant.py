@@ -159,14 +159,24 @@ def _warm_request(settings):
     }
 
 
-def _iter_stream_deltas(response, t_ms):
-    """Yield text deltas from an SSE chat completion stream."""
+def _iter_stream_deltas(response, t_ms, finish=None):
+    """Yield text deltas from an SSE chat completion stream.
+
+    finish, if a dict, receives the last finish_reason under "reason".
+    """
     first_token_printed = False
     stream_done_printed = False
+    thinking_printed = False
     for line in response.iter_lines():
         if not line:
             continue
         line = line.decode("utf-8")
+        if line.startswith(":"):
+            # OpenRouter keep-alive while the model reasons; nothing is spoken yet.
+            if not thinking_printed and not first_token_printed:
+                thinking_printed = True
+                print(f"T+{t_ms()}ms llm: model is thinking...", flush=True)
+            continue
         if not line.startswith("data: "):
             continue
         data = line[len("data: "):]
@@ -187,6 +197,8 @@ def _iter_stream_deltas(response, t_ms):
         choices = chunk.get("choices")
         if not choices:
             continue
+        if finish is not None and choices[0].get("finish_reason"):
+            finish["reason"] = choices[0]["finish_reason"]
         delta = choices[0].get("delta", {}).get("content", "")
         if delta:
             if not first_token_printed:
@@ -758,14 +770,20 @@ def ask_yogi(encoded_image, question, settings, history=(), module_text=""):
         return
 
     yielded = False
+    finish = {}
     try:
-        for delta in _iter_stream_deltas(response, t_ms):
+        for delta in _iter_stream_deltas(response, t_ms, finish):
             yielded = True
             yield delta
     except requests.RequestException as e:
         errors.report("Connection to OpenRouter dropped in the middle of the reply.", detail=e)
         return
-    if not yielded and not _stop_speaking.is_set():
+    if not yielded and not _stop_speaking.is_set() and finish.get("reason") == "length":
+        errors.report(
+            f"{settings['model']} used all its tokens thinking and never answered. "
+            "Raise Max Tokens or lower Reasoning in Settings > Visual Model."
+        )
+    elif not yielded and not _stop_speaking.is_set():
         errors.report(
             f"{settings['model']} sent an empty reply. Try again, raise Max Tokens, "
             "or pick another model."

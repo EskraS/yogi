@@ -8,7 +8,8 @@ from PySide6.QtGui import QColor, QFontMetrics
 import qtawesome as qta
 
 from yogi.core.module_loader import (
-    install_module, scan_modules, set_module_enabled, uninstall_module,
+    install_module, prepare_block_env, prepare_blocks, scan_modules,
+    set_module_enabled, uninstall_module,
 )
 from yogi.ui.history_tab import TrashButton
 from yogi.ui.settings import ConfirmOverlay
@@ -380,6 +381,7 @@ class BlocksTab(QWidget):
         if error:
             QMessageBox.warning(self, "Could not add block", error)
             return
+        prepare_blocks()
         self._reload_modules()
 
     def _on_remove(self, block_id: str):
@@ -420,6 +422,8 @@ class BlocksTab(QWidget):
                 b["enabled"] = val
         if card is not None:
             card.set_enabled(val)
+        if val:
+            prepare_block_env(block_id)
 
     def _reload_modules(self):
         try:

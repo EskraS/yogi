@@ -8,6 +8,8 @@ datas = [
     ('modules', 'modules'),
     ('orb.html', '.'),
     ('overlay.html', '.'),
+    # Private Python 3.13 (NuGet "python" package) that runs .py Yogi Blocks.
+    ('python_runtime', 'python'),
 ]
 datas += collect_data_files('faster_whisper')
 datas += collect_data_files('ctranslate2')
