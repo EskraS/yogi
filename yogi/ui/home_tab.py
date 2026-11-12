@@ -41,10 +41,14 @@ _ANIM_STEPS = 18
 
 class HomeTab(QWidget):
     yogi_toggled = Signal(bool)
+    # Clicked while idle. The owner checks keys and models, then calls
+    # set_running(True) or start_failed(message).
+    start_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.is_running = False
+        self.is_checking = False
         self._theme = "dark"
         self._icon_rgb = _IDLE_ICON
         self._text_rgb = _IDLE_TEXT
@@ -143,7 +147,23 @@ class HomeTab(QWidget):
         self.logo_btn.setIconSize(colored.size())
 
     def toggle_yogi(self):
-        self.is_running = not self.is_running
+        if self.is_running:
+            self.set_running(False)
+            return
+        if self.is_checking:
+            return
+        self.is_checking = True
+        self.start_requested.emit()
+
+    def start_failed(self):
+        """The owner already showed why (red popup); stay idle."""
+        self.is_checking = False
+
+    def set_running(self, running: bool):
+        self.is_checking = False
+        if running == self.is_running:
+            return
+        self.is_running = running
 
         # Animate from wherever the colours currently are (even mid-animation)
         # so rapid toggling never causes a visual jump.

@@ -9,6 +9,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from yogi.core import errors
 from yogi.paths import ROOT
 
 # modules/ lives at the project root, not next to this package file.
@@ -480,9 +481,15 @@ def _read_entry_name(folder):
 
 
 def _block_command(entry_path):
-    """Command list for one block entry. .py needs a Python interpreter."""
+    """Command list for one block entry, or None when it can't run here.
+
+    .py needs a Python interpreter. In a frozen build sys.executable is
+    Yogi.exe itself, which would launch a second Yogi instead of the block.
+    """
     if entry_path.suffix.lower() == ".exe":
         return [str(entry_path)]
+    if getattr(sys, "frozen", False):
+        return None
     return [sys.executable, str(entry_path)]
 
 
@@ -494,7 +501,16 @@ def _run_block_process(folder, entry_name, image, module_id):
     """
     entry_path = (folder / entry_name).resolve()
     if not entry_path.is_file() or not _under_root(entry_path, folder):
-        print(f"module {module_id}: entry file missing", flush=True)
+        errors.report(
+            f"Block {module_id}: its entry file {entry_name} is missing. Reinstall the block."
+        )
+        return ""
+    command = _block_command(entry_path)
+    if command is None:
+        errors.report(
+            f"Block {module_id} is a Python script, and Yogi.exe can't run those. "
+            "Use the block's .exe build, or run Yogi from source."
+        )
         return ""
 
     png_path = None
@@ -503,7 +519,7 @@ def _run_block_process(folder, entry_name, image, module_id):
             png_path = tmp.name
         image.save(png_path, format="PNG")
 
-        cmd = _block_command(entry_path) + [png_path]
+        cmd = command + [png_path]
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         kwargs = {
@@ -517,13 +533,12 @@ def _run_block_process(folder, entry_name, image, module_id):
 
         completed = subprocess.run(cmd, **kwargs)
     except subprocess.TimeoutExpired:
-        print(
-            f"module {module_id}: timed out after {MODULE_RUN_TIMEOUT_S}s",
-            flush=True,
+        errors.report(
+            f"Block {module_id} took longer than {MODULE_RUN_TIMEOUT_S}s and was skipped for this question."
         )
         return ""
     except Exception as exc:
-        print(f"module {module_id}: {exc}", flush=True)
+        errors.report(f"Block {module_id} couldn't start.", detail=exc)
         return ""
     finally:
         if png_path is not None:
@@ -538,9 +553,9 @@ def _run_block_process(folder, entry_name, image, module_id):
             print(f"module {module_id}: {line}", flush=True)
 
     if completed.returncode != 0:
-        print(
-            f"module {module_id}: exited with code {completed.returncode}",
-            flush=True,
+        errors.report(
+            f"Block {module_id} crashed (exit code {completed.returncode}). "
+            "Its log is in the terminal (F2)."
         )
         return ""
 

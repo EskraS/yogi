@@ -7,10 +7,6 @@ Centralises stylesheet builders that were previously copy-pasted across
 # Used as the active/selected accent throughout the app.
 ACCENT_GREEN = "#22c55e"
 
-# Light-theme slider groove colour (also used as the "resting" track colour
-# in the light theme). Exposed so the dark theme can choose a different one.
-SLIDER_TRACK_REST_LIGHT = "#e5e5e5"
-
 
 def scrollbar_stylesheet(track: str, handle: str, handle_hover: str,
                          background: str = "transparent") -> str:

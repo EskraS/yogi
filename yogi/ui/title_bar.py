@@ -44,7 +44,6 @@ class TitleBar(QWidget):
         self.active_tab = "home"
         self.tab_buttons = {}
         self._theme = "dark"
-        self._maximized = False
 
         tabs = [("home", "Home"), ("history", "History"), ("blocks", "Yogi Blocks")]
         for tab_id, label in tabs:
@@ -56,14 +55,13 @@ class TitleBar(QWidget):
 
         layout.addStretch()
 
-        # (attribute, icon when normal, icon when maximized)
         right_buttons = [
-            ("minimize_btn", "mdi.minus", None),
-            ("maximize_btn", "mdi.window-maximize", "mdi.window-restore"),
-            ("settings_btn", "mdi.cog", None),
-            ("close_btn", "mdi.close", None),
+            ("minimize_btn", "mdi.minus"),
+            ("maximize_btn", "mdi.window-maximize"),
+            ("settings_btn", "mdi.cog"),
+            ("close_btn", "mdi.close"),
         ]
-        for attr, icon_name, alt_icon in right_buttons:
+        for attr, icon_name in right_buttons:
             btn = QPushButton()
             btn.setIcon(qta.icon(icon_name, color="#707070"))
             btn.setFixedSize(28, 28)
@@ -87,7 +85,6 @@ class TitleBar(QWidget):
 
     def set_maximized(self, maximized: bool):
         """Swap the maximize/restore icon to match window state."""
-        self._maximized = maximized
         icon_name = "mdi.window-restore" if maximized else "mdi.window-maximize"
         self._chrome_icons[self.maximize_btn] = icon_name
         t = _THEMES[self._theme]

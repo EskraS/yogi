@@ -148,6 +148,12 @@ class RegionSelectOverlay(QWidget):
         if self._loop is not None and self._loop.isRunning():
             self._loop.quit()
 
+    def is_selecting(self) -> bool:
+        return self._loop is not None and self._loop.isRunning() and not self._closing
+
+    def cancel(self):
+        self._finish(None)
+
     def hide_now(self):
         """End a pending fade-out at once; called before a new screen grab."""
         self._hide_timer.stop()
@@ -253,6 +259,7 @@ class RegionSelectBridge(QObject):
     """Lets the hotkey thread run the overlay on the Qt GUI thread and wait for it."""
 
     _show_overlay = Signal()
+    _cancel_overlay = Signal()
 
     def __init__(self):
         super().__init__()
@@ -261,6 +268,7 @@ class RegionSelectBridge(QObject):
         self._result: Image.Image | None = None
         self._overlay: RegionSelectOverlay | None = None
         self._show_overlay.connect(self._run_overlay)
+        self._cancel_overlay.connect(self._cancel_selection)
         if QApplication.instance() is not None:
             # Built now so overlay.html is loaded before the first screenshot.
             self._overlay = RegionSelectOverlay()
@@ -287,6 +295,19 @@ class RegionSelectBridge(QObject):
             result = self._result
             self._event = None
             return result
+
+    def cancel(self):
+        """Close an open selection as if Esc was pressed in it. Safe from any thread.
+
+        The overlay only sees Esc when it has keyboard focus, and Windows often
+        keeps focus with the app the user was in, so the stop hotkey calls this.
+        """
+        self._cancel_overlay.emit()
+
+    def _cancel_selection(self):
+        overlay = self._overlay
+        if overlay is not None and overlay.is_selecting():
+            overlay.cancel()
 
     def _select_region(self) -> Image.Image | None:
         from yogi.core.assistant import grab_primary_monitor

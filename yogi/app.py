@@ -9,14 +9,15 @@ if sys.platform == "win32":
 from yogi.ui.orb import OrbBridge, OrbWindow  # noqa: E402
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QStackedWidget
-from PySide6.QtCore import Qt, QPoint, QRect
+from PySide6.QtCore import Qt, QPoint, QRect, Signal
 from PySide6.QtGui import QFontDatabase, QFont, QIcon, QColor, QMouseEvent
 
 from yogi.paths import asset
-from yogi.core import history_store
+from yogi.core import errors, history_store, preflight
 from yogi.audio import voice_levels
 from yogi.core.assistant import (
     DEFAULT_HOTKEY,
+    get_settings,
     listen_for_hotkey,
     start_prewarm,
     stop_prewarm,
@@ -31,6 +32,7 @@ from yogi.ui.blocks_tab import BlocksTab
 from yogi.ui.history_tab import HistoryTab
 from yogi.ui.region_overlay import RegionSelectBridge
 from yogi.ui.debug_console import DebugConsole, F2Filter, install_stdio_capture
+from yogi.ui.error_popup import ErrorPopup
 
 RESIZE_MARGIN = 6
 
@@ -41,8 +43,16 @@ def make_icon():
 
 
 class YogiApp(QMainWindow):
+    # "" when Yogi may start, else the message to show on the home tab.
+    _preflight_done = Signal(str)
+    # Emitted from any thread by errors.report(); shown on the GUI thread.
+    _error_reported = Signal(str)
+
     def __init__(self):
         super().__init__()
+        self.error_popup = ErrorPopup(self)
+        self._error_reported.connect(self.error_popup.show_message)
+        errors.set_handler(self._error_reported.emit)
         self.setWindowTitle("Yogi")
         self.resize(1280, 720)
         self.setMinimumSize(960, 600)
@@ -98,7 +108,9 @@ class YogiApp(QMainWindow):
         self._yogi_thread = None
         self._yogi_stop_event = None
         self._region_bridge = RegionSelectBridge()
-        set_region_select_handler(self._region_bridge.request_screenshot)
+        set_region_select_handler(
+            self._region_bridge.request_screenshot, cancel=self._region_bridge.cancel
+        )
 
         self.orb_window = OrbWindow()
         self.orb_bridge = OrbBridge(self.orb_window)
@@ -107,12 +119,34 @@ class YogiApp(QMainWindow):
         history_store.set_listener(self.history_tab.chat_saved.emit)
 
         self.home_tab.yogi_toggled.connect(self.on_yogi_toggled)
+        self.home_tab.start_requested.connect(self.on_start_requested)
+        self._preflight_done.connect(self.on_preflight_done)
 
 
         # Mouse-move events must reach the window for resize hover cursors;
         # enable tracking on all children (they cover the central widget).
         for child in self.findChildren(QWidget):
             child.setMouseTracking(True)
+
+    def on_start_requested(self):
+        settings = get_settings()
+
+        def run():
+            try:
+                error = preflight.check_ready(settings)
+            except Exception as e:
+                error = f"Couldn't check API keys: {type(e).__name__}"
+            if error:
+                errors.report(f"Yogi not started: {error}")
+            self._preflight_done.emit(error or "")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def on_preflight_done(self, error: str):
+        if error:
+            self.home_tab.start_failed()
+        else:
+            self.home_tab.set_running(True)
 
     def on_yogi_toggled(self, running: bool):
         if running:

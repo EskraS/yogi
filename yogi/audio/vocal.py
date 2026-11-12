@@ -13,6 +13,8 @@ import threading
 
 import requests
 
+from yogi.core import errors
+
 PLAYBACK_RATE = 24000
 
 GROK, OPENROUTER, FISH = "grok", "openrouter", "fish"
@@ -26,7 +28,7 @@ KEY_PROVIDER = {GROK: "xai", OPENROUTER: "openrouter_tts", FISH: "fish_audio"}
 
 DEFAULTS = {
     "tts_provider": GROK,
-    "grok_voice": "wgarphwblupt",
+    "grok_voice": "",
     "grok_language": "en",
     "grok_speed": 1.0,
     "grok_latency": 1,
@@ -339,23 +341,21 @@ def resolve_fish_voice(s, key):
     ]
     found = exact[0]["_id"] if len(exact) == 1 else ""
     if error and not items:
-        print(f"tts: couldn't look up Fish voice {voice!r} ({error}). Using the default voice.", flush=True)
+        errors.report(f"Couldn't look up Fish voice {voice!r} ({error}). Using the default voice.")
         s["fish_voice"] = ""
         return
     _fish_title_ids[wanted] = found
     if found:
         print(f"tts: Fish voice {voice!r} -> {found}", flush=True)
     elif exact:
-        print(
-            f"tts: {voice!r} matches {len(exact)} Fish voices. Paste one voice id. "
-            "Using the default voice.",
-            flush=True,
+        errors.report(
+            f"{voice!r} matches {len(exact)} Fish voices. Paste one voice id in Settings. "
+            "Using the default voice."
         )
     else:
-        print(
-            f"tts: {voice!r} is not a Fish voice id. Paste the id from the voice library. "
-            "Using the default voice.",
-            flush=True,
+        errors.report(
+            f"{voice!r} is not a Fish voice id. Paste the id from the voice library. "
+            "Using the default voice."
         )
     s["fish_voice"] = found
 
@@ -408,7 +408,7 @@ def iter_sentences(chunks, min_chars=80):
 
 
 def speak_http(pieces, build_request, write, session, stream=True, lookahead=2,
-               should_stop=lambda: False):
+               should_stop=lambda: False, service="The voice provider"):
     """One request per text piece, played in order.
 
     Up to `lookahead` pieces download while an earlier one plays, so there is
@@ -424,7 +424,10 @@ def speak_http(pieces, build_request, write, session, stream=True, lookahead=2,
             with session.post(url, headers=headers, json=body, stream=stream,
                               timeout=(10, 120)) as r:
                 if r.status_code != 200:
-                    print(f"tts: HTTP {r.status_code}: {r.text[:300]}", flush=True)
+                    errors.report(
+                        errors.http_reason(r.status_code, service),
+                        detail=errors.api_error_text(r),
+                    )
                     return
                 if stream:
                     for data in r.iter_content(4096):
@@ -433,8 +436,11 @@ def speak_http(pieces, build_request, write, session, stream=True, lookahead=2,
                         out.put(data)
                 else:
                     out.put(r.content)
+        except requests.Timeout:
+            errors.report(f"{service} didn't answer in time. Part of the reply wasn't spoken.")
         except requests.RequestException as e:
-            print(f"tts: request failed: {e}", flush=True)
+            if not should_stop():
+                errors.report(f"Couldn't reach {service}. Check your internet connection.", detail=e)
         finally:
             out.put(None)
 
